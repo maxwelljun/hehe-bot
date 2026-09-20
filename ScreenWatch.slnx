@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ScreenWatch.Core/ScreenWatch.Core.csproj" />
+    <Project Path="src/ScreenWatch.Windows/ScreenWatch.Windows.csproj" />
+    <Project Path="src/YaxinMonitor.Core/YaxinMonitor.Core.csproj" />
+    <Project Path="src/YaxinMonitor.Windows/YaxinMonitor.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ScreenWatch.Core.Tests/ScreenWatch.Core.Tests.csproj" />
+    <Project Path="tests/YaxinMonitor.Core.Tests/YaxinMonitor.Core.Tests.csproj" />
+  </Folder>
+</Solution>

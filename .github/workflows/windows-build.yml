@@ -1,0 +1,30 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build, test and package
+        shell: pwsh
+        run: ./scripts/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ScreenWatch-win-x64
+          path: |
+            artifacts/ScreenWatch-1.0.0-win-x64.zip
+            artifacts/ScreenWatch-1.0.0-win-x64.zip.sha256
+            artifacts/YaxinMonitor-1.2.2-win-x64.zip
+            artifacts/YaxinMonitor-1.2.2-win-x64.zip.sha256
+          if-no-files-found: error

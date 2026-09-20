@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>YaxinMonitor</AssemblyName>
+    <RootNamespace>YaxinMonitor.Windows</RootNamespace>
+    <Version>1.2.2</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../YaxinMonitor.Core/YaxinMonitor.Core.csproj" />
+    <EmbeddedResource Include="SiteBridge.js" />
+  </ItemGroup>
+</Project>

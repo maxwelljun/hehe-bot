@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ScreenWatch · 离线演示</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f4f6fb; color: #1a2b45; font: 16px/1.7 system-ui, "Microsoft YaHei", sans-serif; }
+    main { max-width: 1000px; padding: 48px 24px; margin: auto; }
+    .eyebrow { color: #3269c6; letter-spacing: .12em; font-size: 12px; font-weight: 750; }
+    h1 { margin: 10px 0; font-size: clamp(28px, 5vw, 42px); line-height: 1.3; }
+    .lead { color: #596b83; margin-bottom: 32px; }
+    .workspace { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 32px; }
+    .panel { background: white; border: 1px solid #dce3ee; border-radius: 16px; padding: 28px; box-shadow: 0 12px 28px #25345008; }
+    .target-panel { flex: 0 0 310px; }
+    .instructions { flex: 1 1 310px; }
+    .small { font-size: 13px; color: #64758a; }
+    h2 { font-size: 18px; margin: 0 0 18px; }
+    #target { width: 240px; height: 170px; border: 3px solid #71829c; background: #e9eef6; color: #42536f; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 0; }
+    #target.done { background: #d7f5e5; border-color: #168458; color: #0d6944; }
+    .symbol { font: bold 48px/1.2 sans-serif; }
+    #state { font-size: 24px; font-weight: 750; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; margin: 24px 0 12px; }
+    button { border: 1px solid #cad6e6; border-radius: 8px; background: white; color: #25405f; padding: 10px 16px; font: inherit; font-size: 14px; cursor: pointer; }
+    button.primary { color: white; background: #2862c4; border-color: #2862c4; }
+    button:hover { filter: brightness(.96); }
+    button:focus-visible { outline: 3px solid #80b0ff; outline-offset: 2px; }
+    li { margin: 10px 0; }
+    ol { padding-left: 24px; }
+    code { background: #edf2fa; padding: 2px 5px; border-radius: 4px; }
+    footer { margin-top: 28px; font-size: 13px; color: #64758a; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">SCREENWATCH / LOCAL DEMO</div>
+  <h1>用一张状态卡，验证画面提醒。</h1>
+  <p class="lead">此页面可离线使用。下方卡片在“等待中”和“已完成”之间切换，供通用画面监控测试。</p>
+  <div class="workspace">
+    <section class="panel target-panel">
+      <h2>监控目标</h2>
+      <div id="target" role="status" aria-live="polite">
+        <span class="symbol" id="symbol" aria-hidden="true">○</span>
+        <span id="state">等待中</span>
+      </div>
+      <p class="small">框选上面整张矩形卡片，包括边框。<br>保持页面缩放与窗口位置不变。</p>
+    </section>
+    <section class="panel instructions">
+      <h2>第一次测试</h2>
+      <ol>
+        <li>点击“显示已完成”，在 ScreenWatch 中框选左侧卡片，然后保存当前画面为参考。</li>
+        <li>点击“测试一次匹配”，相似度应接近 <code>100%</code>。</li>
+        <li>设置间隔 <code>1000</code> 毫秒、连续命中 <code>2</code> 次、消失确认 <code>2</code> 次、冷却 <code>3</code> 秒。</li>
+        <li>点击“自动切换”，再到 ScreenWatch 点击“开始监控”。程序隐藏到托盘后，让本页面保持可见。</li>
+        <li>卡片每隔 6 秒切换一次。“已完成”连续出现约 2 秒后应提醒一次；持续显示时不会重复提醒。</li>
+      </ol>
+    </section>
+  </div>
+  <div class="controls">
+    <button id="waiting" type="button">显示等待中</button>
+    <button id="complete" type="button">显示已完成</button>
+    <button id="cycle" type="button" class="primary" aria-pressed="false">自动切换（每 6 秒）</button>
+  </div>
+  <div id="mode" class="small" aria-live="polite">手动模式</div>
+  <footer>演示页面没有网络请求。若提醒没有弹出，请检查 Windows 通知设置和“请勿打扰”；同时可查看 ScreenWatch 命中日志。</footer>
+</main>
+<script>
+  const target = document.getElementById('target');
+  const state = document.getElementById('state');
+  const symbol = document.getElementById('symbol');
+  const cycle = document.getElementById('cycle');
+  const mode = document.getElementById('mode');
+  let done = false;
+  let timer = null;
+  function showState(next) {
+    done = next;
+    target.classList.toggle('done', done);
+    state.textContent = done ? '已完成' : '等待中';
+    symbol.textContent = done ? '✓' : '○';
+  }
+  function stopCycle() {
+    clearInterval(timer);
+    timer = null;
+    cycle.textContent = '自动切换（每 6 秒）';
+    cycle.setAttribute('aria-pressed', 'false');
+    mode.textContent = '手动模式';
+  }
+  document.getElementById('waiting').addEventListener('click', () => { stopCycle(); showState(false); });
+  document.getElementById('complete').addEventListener('click', () => { stopCycle(); showState(true); });
+  cycle.addEventListener('click', () => {
+    if (timer !== null) { stopCycle(); return; }
+    showState(false);
+    cycle.textContent = '停止自动切换';
+    cycle.setAttribute('aria-pressed', 'true');
+    mode.textContent = '自动模式：等待中 6 秒 → 已完成 6 秒，循环切换。';
+    timer = setInterval(() => showState(!done), 6000);
+  });
+</script>
+</body>
+</html>
