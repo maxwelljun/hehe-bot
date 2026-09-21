@@ -130,6 +130,7 @@ public sealed class StrategyEngine
         {
             RollAccountingDate(now);
             State.DailyAcceptedStake += order.Amount;
+            order.CountedInDailyStake = true;
         }
     }
 
@@ -179,7 +180,11 @@ public sealed class StrategyEngine
     }
 
     public decimal ReservedStake => State.Orders.Values
-        .Where(order => order.Status is "Submitted" or "Accepted")
+        .Where(order => order.Status is "Submitted" or "Accepted" or "Unknown")
+        .Sum(order => order.Amount);
+
+    public decimal UncertainStake => State.Orders.Values
+        .Where(order => order.Status == "Unknown" && !order.CountedInDailyStake)
         .Sum(order => order.Amount);
 
     private void SettlePending(TableRuntimeState table, TableSnapshot snapshot, DateTimeOffset now, List<EngineEvent> events)

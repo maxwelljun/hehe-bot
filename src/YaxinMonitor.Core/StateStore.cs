@@ -43,7 +43,10 @@ public sealed class StateStore
         if (state.Orders.Values.Any(order => order.Status is "Preparing" or "Submitted" or "Accepted"))
         {
             foreach (OrderState order in state.Orders.Values.Where(order => order.Status is "Preparing" or "Submitted" or "Accepted"))
+            {
+                if (order.Status == "Accepted") order.CountedInDailyStake = true;
                 order.Status = "Unknown";
+            }
             foreach (TableRuntimeState table in state.Tables.Values)
                 if (table.ActiveChase is { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement } chase)
                     chase.Status = ChaseStatus.Unknown;

@@ -104,6 +104,7 @@ public sealed class OrderState
     public int Attempt { get; set; }
     public string Status { get; set; } = "Preparing";
     public bool IsSimulation { get; set; }
+    public bool CountedInDailyStake { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? UpdatedAt { get; set; }
     public int? ResponseCode { get; set; }

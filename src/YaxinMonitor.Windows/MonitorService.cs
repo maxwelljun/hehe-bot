@@ -100,8 +100,7 @@ internal sealed class MonitorService : IAsyncDisposable
         if (settings.Mode == MonitorMode.Live)
         {
             settings.Validate();
-            if (_engine.State.Orders.Values.Any(order => order.Status == "Unknown"))
-                throw new InvalidOperationException("存在状态不明的订单，完成对账前不能恢复真实下注。");
+            QuarantineUnknownTables();
             if (!_bettingCompatible)
                 throw new InvalidOperationException("页面下注接口兼容检查尚未通过，不能恢复真实下注。");
         }
@@ -177,6 +176,7 @@ internal sealed class MonitorService : IAsyncDisposable
         {
             BridgePoll poll = await adapter.PollAsync(cancellationToken).ConfigureAwait(false);
             HandleBridgeEvents(poll.Events, settings);
+            QuarantineUnknownTables();
 
             string? observationIssue = poll.BridgeVersion != 3
                 ? $"页面桥接协议版本为 {poll.BridgeVersion}，程序要求版本 3"
@@ -224,11 +224,11 @@ internal sealed class MonitorService : IAsyncDisposable
                     }
                     catch (InvalidDataException exception)
                     {
-                        QuarantineTable(table.TableId, exception.Message, settings);
+                        QuarantineTable(table.TableId, exception.Message);
                     }
                 }
                 await DispatchOneAsync(adapter, poll, settings, cancellationToken).ConfigureAwait(false);
-                CheckAckTimeout(settings);
+                CheckAckTimeout();
                 string isolated = _quarantinedTables.IsEmpty ? "" : $" · 已隔离 {_quarantinedTables.Count} 桌";
                 string compatibility = _bettingCompatible ? "" : " · 下注接口不兼容";
                 StatusChanged?.Invoke($"已连接 · {poll.Tables.Length} 桌{isolated}{compatibility}");
@@ -254,14 +254,10 @@ internal sealed class MonitorService : IAsyncDisposable
             if (!_engine.State.Orders.TryGetValue(item.OrderKey, out OrderState? order)
                 || order.Status is not ("Submitted" or "Unknown")) continue;
             bool lateConfirmation = order.Status == "Unknown";
-            if (lateConfirmation && item.ErrorCode == 0 && _quarantinedTables.ContainsKey(order.TableId))
-            {
-                WriteLog($"迟到确认显示桌台 {order.TableId} 的订单已受理，但桌台数据已异常，仍需人工对账。");
-                continue;
-            }
             if (item.ErrorCode == 0)
             {
                 _engine.MarkAccepted(item.OrderKey, DateTimeOffset.Now);
+                _quarantinedTables.TryRemove(order.TableId, out _);
                 _store.SaveState(_engine.State);
                 _store.AppendOrder(order);
                 WriteLog($"下注已受理：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，第 {order.Attempt} 档。");
@@ -370,11 +366,11 @@ internal sealed class MonitorService : IAsyncDisposable
         if (balance - reserved < candidate.Amount) return "可用余额不足。";
         if (reserved + candidate.Amount > settings.MaxReservedStake) return "达到同时在途金额上限。";
         decimal daily = _engine.State.AccountingDate == DateOnly.FromDateTime(DateTime.Now) ? _engine.State.DailyAcceptedStake : 0;
-        if (daily + candidate.Amount > settings.DailyStakeLimit) return "达到每日下注金额上限。";
+        if (daily + _engine.UncertainStake + candidate.Amount > settings.DailyStakeLimit) return "达到每日下注金额上限。";
         return null;
     }
 
-    private void CheckAckTimeout(YaxinSettings settings)
+    private void CheckAckTimeout()
     {
         OrderState? timedOut = _engine.State.Orders.Values.FirstOrDefault(order => order.Status == "Submitted"
             && DateTimeOffset.Now - (order.UpdatedAt ?? order.CreatedAt) > TimeSpan.FromSeconds(8));
@@ -382,10 +378,11 @@ internal sealed class MonitorService : IAsyncDisposable
         _engine.MarkUnknown(timedOut.OrderKey, DateTimeOffset.Now);
         _store.SaveState(_engine.State);
         _store.AppendOrder(timedOut);
-        if (settings.Mode == MonitorMode.Live) PauseOrders("订单确认超时，状态不明");
+        if (_quarantinedTables.TryAdd(timedOut.TableId, "订单确认超时，状态不明"))
+            WriteLog($"桌台 {timedOut.TableId} 已隔离：订单确认超时，其他桌台继续处理新订单。");
     }
 
-    private void QuarantineTable(long tableId, string reason, YaxinSettings settings)
+    private void QuarantineTable(long tableId, string reason)
     {
         if (_engine.State.Tables.TryGetValue(tableId, out TableRuntimeState? table)
             && table.ActiveChase is { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement, PendingOrderKey: not null } chase)
@@ -397,8 +394,13 @@ internal sealed class MonitorService : IAsyncDisposable
         }
 
         if (!_quarantinedTables.TryAdd(tableId, reason)) return;
-        if (settings.Mode == MonitorMode.Live) PauseOrders($"桌台 {tableId} 数据异常");
-        WriteLog($"桌台 {tableId} 已隔离，其他桌台继续监控：{reason}");
+        WriteLog($"桌台 {tableId} 已隔离，其他桌台继续监控和处理新订单：{reason}");
+    }
+
+    private void QuarantineUnknownTables()
+    {
+        foreach (OrderState order in _engine.State.Orders.Values.Where(order => order.Status == "Unknown"))
+            _quarantinedTables.TryAdd(order.TableId, "存在状态不明的订单");
     }
 
     private void DelaySubmissions(TimeSpan delay)

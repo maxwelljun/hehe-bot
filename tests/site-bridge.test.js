@@ -113,13 +113,43 @@ async function main() {
   assert.equal(ackEvents[0].errorMessage, "");
 
   ctrl.tableRoundInfoBean.gameSeq = 43;
+  let secondSubmitCount = 0;
+  const secondCtrl = {
+    tableId: 19,
+    tableName: "Baccarat 19",
+    gameType: 1,
+    tableRoundInfoBean: { shoeSeq: 8, gameSeq: 12 },
+    tableStateInfo: { tableState: 2, stateCountdown: 15000 },
+    tableRoadBean: { history: [2, 2, 2, 2, 2, 2] },
+    tableBetBean: {
+      betZoneLimitData: {
+        PLAYER: { minLimit: 10, maxLimit: 1000 },
+        BANKER: { minLimit: 10, maxLimit: 1000 }
+      },
+      betZoneMap: {},
+      unconfirmBetTotalNum: 0
+    },
+    reqBetMessage() { secondSubmitCount++; },
+    setBetResponseMsg() { }
+  };
+  context.window.TableManager._tableDataCtrlMap["19"] = secondCtrl;
+  assert.equal(context.window.__YAXIN_MONITOR__.poll().tables.length, 2);
+
   const rejectedRequest = { ...request, orderKey: "strategy:18:7:43:1", gameSeq: 43 };
+  const secondRequest = { ...request, orderKey: "strategy:19:8:12:1", tableId: 19, shoeSeq: 8, gameSeq: 12 };
   assert.equal(context.window.__YAXIN_MONITOR__.submitBet(rejectedRequest).submitted, true);
+  assert.equal(context.window.__YAXIN_MONITOR__.submitBet(rejectedRequest).submitted, false);
+  assert.equal(context.window.__YAXIN_MONITOR__.submitBet(secondRequest).submitted, true);
+  assert.equal(secondSubmitCount, 1);
+  secondCtrl.setBetResponseMsg({ tableId: 19, gamblingNum: 12, errorCode: 0 });
   ctrl.setBetResponseMsg({ tableId: 18, gamblingNum: 43, errorCode: -96 });
   const rejectedEvents = context.window.__YAXIN_MONITOR__.poll().events;
-  assert.equal(rejectedEvents.length, 1);
-  assert.equal(rejectedEvents[0].errorCode, -96);
-  assert.equal(rejectedEvents[0].errorMessage, "测试拒绝原因");
+  assert.equal(rejectedEvents.length, 2);
+  const acceptedSecond = rejectedEvents.find(event => event.tableId === 19);
+  const rejectedFirst = rejectedEvents.find(event => event.tableId === 18);
+  assert.equal(acceptedSecond.errorCode, 0);
+  assert.equal(rejectedFirst.errorCode, -96);
+  assert.equal(rejectedFirst.errorMessage, "测试拒绝原因");
 
   context.window.GameManager.PlayerInfo.userId = null;
   assert.equal(context.window.__YAXIN_MONITOR__.poll().loggedIn, true);

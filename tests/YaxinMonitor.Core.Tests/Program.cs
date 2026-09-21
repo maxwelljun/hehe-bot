@@ -83,6 +83,8 @@ var tests = new (string Name, Action Run)[]
         engine.MarkSubmitted(bet, Now()); engine.MarkUnknown(bet.OrderKey, Now());
         snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 1] };
         False(engine.Observe(snapshot, Now().AddMinutes(1)).OfType<BetRequestedEvent>().Any());
+        Equal(bet.Amount, engine.ReservedStake);
+        Equal(bet.Amount, engine.UncertainStake);
     }),
     ("Late acceptance recovers an unknown order", () =>
     {
@@ -92,6 +94,8 @@ var tests = new (string Name, Action Run)[]
         engine.MarkUnknown(bet.OrderKey, Now().AddSeconds(8));
         engine.MarkAccepted(bet.OrderKey, Now().AddSeconds(9));
         Equal("Accepted", engine.State.Orders[bet.OrderKey].Status);
+        True(engine.State.Orders[bet.OrderKey].CountedInDailyStake);
+        Equal(0m, engine.UncertainStake);
         Equal(ChaseStatus.AwaitingSettlement, engine.State.Tables[1].ActiveChase!.Status);
     }),
     ("Late rejection recovers an unknown order", () =>
@@ -234,12 +238,19 @@ var tests = new (string Name, Action Run)[]
         state.Tables[1] = new TableRuntimeState
         {
             TableId = 1, ShoeSeq = 1,
-            ActiveChase = new ChaseTaskState { TaskKey = "t", PendingOrderKey = "o", Status = ChaseStatus.AwaitingSettlement }
+            ActiveChase = new ChaseTaskState
+            {
+                TaskKey = "t", PendingOrderKey = "o", Status = ChaseStatus.AwaitingSettlement,
+                StreakSide = BaccaratOutcome.Banker, BetSide = BetSide.Player
+            }
         };
-        state.Orders["o"] = new OrderState { OrderKey = "o", TableId = 1, Status = "Accepted" };
+        state.Orders["o"] = new OrderState { OrderKey = "o", TableId = 1, Amount = 100, Status = "Accepted" };
+        state.DailyAcceptedStake = 100;
         store.SaveState(state);
         EngineState loaded = store.LoadState();
         Equal("Unknown", loaded.Orders["o"].Status);
+        True(loaded.Orders["o"].CountedInDailyStake);
+        Equal(0m, new StrategyEngine(loaded).UncertainStake);
         Equal(ChaseStatus.Unknown, loaded.Tables[1].ActiveChase!.Status);
     }))
 };

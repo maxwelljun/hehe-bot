@@ -14,7 +14,7 @@
   const stateNames = { 0: "RP", 1: "S", 2: "A", 3: "D", 20: "MC", 21: "MCP", 22: "MCB", 1000: "R" };
   const events = [];
   let sequence = 0;
-  let pending = null;
+  const pendingOrders = [];
   const hookedTables = new WeakSet();
   let existingInfo = null;
   try { existingInfo = existingBridge && existingBridge.info(); } catch (_) { }
@@ -64,9 +64,10 @@
   function captureBetAck(message) {
     const tableId = Number(message && message.tableId || 0);
     const responseGameSeq = Number(message && message.gamblingNum || 0);
-    const match = pending && pending.tableId === tableId
-      && (responseGameSeq === 0 || pending.gameSeq === responseGameSeq) ? pending : null;
-    if (!match) return;
+    const matchIndex = pendingOrders.findIndex(order => order.tableId === tableId
+      && (responseGameSeq === 0 || order.gameSeq === responseGameSeq));
+    if (matchIndex < 0) return;
+    const match = pendingOrders[matchIndex];
     emit("betAck", {
       orderKey: match.orderKey,
       tableId,
@@ -74,7 +75,7 @@
       errorCode: Number(message && message.errorCode || 0),
       errorMessage: errorMessage(Number(message && message.errorCode || 0))
     });
-    pending = null;
+    pendingOrders.splice(matchIndex, 1);
   }
 
   function hookTable(ctrl) {
@@ -151,7 +152,7 @@
       };
     },
     submitBet(request) {
-      if (!request || pending) return { submitted: false, error: "已有订单等待网站确认。" };
+      if (!request) return { submitted: false, error: "订单参数为空。" };
       const orderKey = typeof request.orderKey === "string" ? request.orderKey : "";
       const tableId = Number(request.tableId);
       const shoeSeq = Number(request.shoeSeq);
@@ -168,6 +169,8 @@
         return { submitted: false, error: "下注金额无效。" };
       const ctrl = (tableManager._tableDataCtrlMap || {})[String(tableId)];
       if (!ctrl || Number(ctrl.gameType) !== 1) return { submitted: false, error: "找不到百家乐桌台。" };
+      if (pendingOrders.some(order => order.tableId === tableId))
+        return { submitted: false, error: "该桌台已有订单等待网站确认。" };
       if (!hookTable(ctrl)) return { submitted: false, error: "无法监听目标桌台的下注回执。" };
       if (!ctrl.tableRoundInfoBean || Number(ctrl.tableRoundInfoBean.shoeSeq) !== shoeSeq)
         return { submitted: false, error: "目标牌靴已变化。" };
@@ -190,12 +193,14 @@
       if (!betData) betData = bean.betZoneMap[request.side] = { confirmBetNum: 0, unConfirmBetNum: 0, preRoundBetNum: 0, betTime: 0 };
       betData.unConfirmBetNum = amount;
       bean.lastBetDataKey = request.side;
-      pending = { orderKey, tableId, gameSeq };
+      const pending = { orderKey, tableId, gameSeq };
+      pendingOrders.push(pending);
       try {
         ctrl.reqBetMessage(1);
         return { submitted: true, error: "" };
       } catch (error) {
-        pending = null;
+        const index = pendingOrders.indexOf(pending);
+        if (index >= 0) pendingOrders.splice(index, 1);
         betData.unConfirmBetNum = 0;
         return { submitted: false, error: String(error && error.message || error) };
       }
