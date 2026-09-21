@@ -17,16 +17,18 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _minimumSeconds = NumberBox(60);
     private readonly CheckBox _playSound = new() { Text = "下注及结算语音提醒", AutoSize = true };
     private readonly Button _start = new() { Text = "启动监控", AutoSize = true };
-    private readonly Button _forceStart = new() { Text = "强制启动", AutoSize = true };
-    private readonly Button _stop = new() { Text = "停止", AutoSize = true, Enabled = false };
-    private readonly Button _pause = new() { Text = "恢复新订单", AutoSize = true };
+    private readonly Button _forceStart = new() { Text = "重置状态并启动", AutoSize = true };
+    private readonly Button _stop = new() { Text = "停止监控", AutoSize = true, Enabled = false };
+    private readonly Button _pause = new() { Text = "恢复自动下单", AutoSize = true, Enabled = false };
     private readonly Button _save = new() { Text = "保存设置", AutoSize = true };
     private readonly Button _reconcile = new() { Text = "订单对账", AutoSize = true };
     private readonly Label _connection = new() { AutoSize = true, Text = "未连接", Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold) };
     private readonly Label _summary = new() { AutoSize = true, Text = "桌台 0 · 余额 0 · 今日 0 · 在途 0" };
     private readonly DataGridView _tables = new();
     private readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
+    private readonly ToolTip _toolTips = new();
     private readonly NotifyIcon _tray;
+    private readonly ToolStripMenuItem _trayOrders;
     private YaxinSettings _currentSettings;
     private bool _exiting;
 
@@ -91,9 +93,12 @@ internal sealed class MainForm : Form
         _reconcile.Click += ReconcileClicked;
         FormClosing += OnFormClosing;
 
+        ConfigureToolTips();
+
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("打开", null, (_, _) => ShowWindow());
-        trayMenu.Items.Add("暂停新订单", null, (_, _) => PauseFromTray());
+        _trayOrders = new ToolStripMenuItem("恢复自动下单", null, (_, _) => ToggleOrdersFromTray());
+        trayMenu.Items.Add(_trayOrders);
         trayMenu.Items.Add("退出", null, async (_, _) => await ExitAsync());
         _tray = new NotifyIcon
         {
@@ -105,19 +110,21 @@ internal sealed class MainForm : Form
         _tray.DoubleClick += (_, _) => ShowWindow();
 
         AddLog("当前策略：" + settings.Strategy.Summary + "。首次使用请启动监控并在 Chrome 中手动登录。");
-        UpdatePauseButton();
+        UpdateCommandState();
     }
 
     private Control BuildLayout()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(12) };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(12) };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
 
-        var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Padding = new Padding(0, 0, 0, 8) };
-        commands.Controls.AddRange([
+        var settings = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Padding = new Padding(0, 0, 0, 4) };
+        settings.Controls.AddRange([
+            SectionLabel("设置"),
             LabelFor("模式"), _mode,
             LabelFor("触发走势"), _triggerSide,
             LabelFor("连续次数"), _streakLength,
@@ -126,7 +133,12 @@ internal sealed class MainForm : Form
             LabelFor("每日上限"), _dailyLimit,
             LabelFor("在途上限"), _reservedLimit,
             LabelFor("安全余量(秒)"), _minimumSeconds,
-            _playSound, _save, _reconcile, _start, _forceStart, _stop, _pause
+            _playSound, _save
+        ]);
+
+        var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Padding = new Padding(0, 2, 0, 8) };
+        commands.Controls.AddRange([
+            SectionLabel("运行"), _start, _stop, _pause, _reconcile, _forceStart
         ]);
 
         var status = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(0, 4, 0, 8) };
@@ -143,11 +155,22 @@ internal sealed class MainForm : Form
 
         var logGroup = new GroupBox { Text = "运行记录", Dock = DockStyle.Fill, Padding = new Padding(8) };
         logGroup.Controls.Add(_log);
-        root.Controls.Add(commands, 0, 0);
-        root.Controls.Add(status, 0, 1);
-        root.Controls.Add(_tables, 0, 2);
-        root.Controls.Add(logGroup, 0, 3);
+        root.Controls.Add(settings, 0, 0);
+        root.Controls.Add(commands, 0, 1);
+        root.Controls.Add(status, 0, 2);
+        root.Controls.Add(_tables, 0, 3);
+        root.Controls.Add(logGroup, 0, 4);
         return root;
+    }
+
+    private void ConfigureToolTips()
+    {
+        _toolTips.SetToolTip(_save, "保存当前设置，不启动监控。");
+        _toolTips.SetToolTip(_start, "使用当前设置启动监控，并恢复上次运行状态。");
+        _toolTips.SetToolTip(_stop, "停止监控服务。专用 Chrome 不会关闭。");
+        _toolTips.SetToolTip(_pause, "只暂停或恢复新的自动订单；监控和已受理订单继续运行。");
+        _toolTips.SetToolTip(_reconcile, "核对状态不明订单，并恢复对应的隔离桌台。");
+        _toolTips.SetToolTip(_forceStart, "清空桌台、追注、订单和风险累计状态后启动。");
     }
 
     private void ConfigureGrid()
@@ -190,18 +213,18 @@ internal sealed class MainForm : Form
         {
             YaxinSettings settings = ReadSettings(requireLiveConfirmation: false);
             DialogResult result = MessageBox.Show(
-                "强制启动会清空上次保存的桌台、追注、未完成订单、当日累计金额和防重复状态，" +
+                "重置状态并启动会清空上次保存的桌台、追注、未完成订单、当日累计金额和防重复状态，" +
                 "然后按网页最新数据重新判断。设置、日志和订单审计不会删除。\n\n" +
-                "如果网站仍有未完成订单，强制启动可能造成重复下注。请先核对网站订单记录。\n\n" +
+                "如果网站仍有未完成订单，重置后可能造成重复下注。请先核对网站订单记录。\n\n" +
                 $"模式：{ModeText(settings.Mode)}\n策略：{settings.Strategy.Summary}\n" +
-                $"每日上限：{settings.DailyStakeLimit:0.##}\n在途上限：{settings.MaxReservedStake:0.##}\n\n确认强制启动？",
-                "确认强制启动", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                $"每日上限：{settings.DailyStakeLimit:0.##}\n在途上限：{settings.MaxReservedStake:0.##}\n\n确认重置状态并启动？",
+                "确认重置状态并启动", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
             if (result != DialogResult.Yes) return;
 
             _service.ResetRuntimeState(settings);
             _store.SaveSettings(settings);
             _currentSettings = settings;
-            StartService("正在强制启动专用 Chrome 和监控服务...");
+            StartService("正在重置运行状态并启动专用 Chrome 和监控服务...");
             await Task.CompletedTask;
         }
         catch (Exception exception) { ShowError(exception.Message); }
@@ -210,10 +233,8 @@ internal sealed class MainForm : Form
     private void StartService(string message)
     {
         _service.Start(Path.Combine(_store.DirectoryPath, "chrome-profile"));
-        _start.Enabled = false;
-        _forceStart.Enabled = false;
-        _stop.Enabled = true;
         SetSettingsEnabled(false);
+        UpdateCommandState();
         AddLog(message);
     }
 
@@ -221,9 +242,8 @@ internal sealed class MainForm : Form
     {
         _stop.Enabled = false;
         await _service.StopAsync();
-        _start.Enabled = true;
-        _forceStart.Enabled = true;
         SetSettingsEnabled(true);
+        UpdateCommandState();
     }
 
     private void PauseClicked(object? sender, EventArgs args)
@@ -232,7 +252,7 @@ internal sealed class MainForm : Form
         {
             if (_service.OrdersPaused) _service.ResumeOrders();
             else _service.PauseOrders();
-            UpdatePauseButton();
+            UpdateCommandState();
         }
         catch (Exception exception) { ShowError(exception.Message); }
     }
@@ -363,7 +383,7 @@ internal sealed class MainForm : Form
         if (firstDisplayedIndex >= 0 && _tables.Rows.Count > 0)
             _tables.FirstDisplayedScrollingRowIndex = Math.Min(firstDisplayedIndex, _tables.Rows.Count - 1);
         _tables.ResumeLayout();
-        UpdatePauseButton();
+        UpdateCommandState();
     }
 
     private void AddLog(string message)
@@ -373,9 +393,18 @@ internal sealed class MainForm : Form
             _log.Lines = _log.Lines[^800..];
     }
 
-    private void UpdatePauseButton()
+    private void UpdateCommandState()
     {
-        _pause.Text = _service.OrdersPaused ? "恢复新订单" : "暂停新订单";
+        bool running = _service.IsRunning;
+        bool live = _currentSettings.Mode == MonitorMode.Live;
+        string orderCommand = _service.OrdersPaused ? "恢复自动下单" : "暂停自动下单";
+        _start.Enabled = !running;
+        _stop.Enabled = running;
+        _forceStart.Enabled = !running;
+        _pause.Enabled = running && live;
+        _pause.Text = orderCommand;
+        _trayOrders.Enabled = running && live;
+        _trayOrders.Text = orderCommand;
     }
 
     private void SetSettingsEnabled(bool enabled)
@@ -390,13 +419,17 @@ internal sealed class MainForm : Form
         _minimumSeconds.Enabled = enabled;
         _playSound.Enabled = enabled;
         _save.Enabled = enabled;
-        _forceStart.Enabled = enabled;
     }
 
-    private void PauseFromTray()
+    private void ToggleOrdersFromTray()
     {
-        _service.PauseOrders();
-        Ui(UpdatePauseButton);
+        try
+        {
+            if (_service.OrdersPaused) _service.ResumeOrders();
+            else _service.PauseOrders();
+            Ui(UpdateCommandState);
+        }
+        catch (Exception exception) { Ui(() => ShowError(exception.Message)); }
     }
 
     private void ShowWindow()
@@ -424,7 +457,11 @@ internal sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _tray?.Dispose();
+        if (disposing)
+        {
+            _toolTips.Dispose();
+            _tray?.Dispose();
+        }
         base.Dispose(disposing);
     }
 
@@ -435,6 +472,13 @@ internal sealed class MainForm : Form
     }
 
     private static Label LabelFor(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(10, 7, 2, 0) };
+    private static Label SectionLabel(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold),
+        Margin = new Padding(0, 7, 8, 0)
+    };
     private static NumericUpDown NumberBox(decimal maximum) => new() { Minimum = 0, Maximum = maximum, DecimalPlaces = 0, Width = 90, ThousandsSeparator = true };
     private static decimal Clamp(decimal value, decimal maximum) => Math.Min(Math.Max(value, 0), maximum);
     private static string SideText(BetSide side) => side == BetSide.Banker ? "庄" : "闲";

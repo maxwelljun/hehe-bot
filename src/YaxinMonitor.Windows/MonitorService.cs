@@ -96,7 +96,7 @@ internal sealed class MonitorService : IAsyncDisposable
 
     public void ResetRuntimeState(YaxinSettings settings)
     {
-        if (IsRunning) throw new InvalidOperationException("请先停止监控再强制启动。");
+        if (IsRunning) throw new InvalidOperationException("请先停止监控再重置运行状态。");
         settings.Validate();
         lock (_engineLock)
         {
@@ -123,14 +123,14 @@ internal sealed class MonitorService : IAsyncDisposable
                 throw new InvalidOperationException("页面下注接口兼容检查尚未通过，不能恢复真实下注。");
         }
         _ordersPaused = false;
-        WriteLog("已恢复新订单处理。");
+        WriteLog("已恢复自动下单。");
     }
 
     public void PauseOrders(string reason = "用户暂停")
     {
         _ordersPaused = true;
         _candidates.Clear();
-        WriteLog("新订单已暂停：" + reason);
+        WriteLog("自动下单已暂停：" + reason);
     }
 
     public void Start(string chromeProfileDirectory)
@@ -223,7 +223,7 @@ internal sealed class MonitorService : IAsyncDisposable
             else if (_reportedCompatibilityIssue is not null)
             {
                 _reportedCompatibilityIssue = null;
-                WriteLog("页面运行时兼容检查已恢复正常；真实新订单仍保持暂停，请核对后手动恢复。");
+                WriteLog("页面运行时兼容检查已恢复正常；自动下单仍保持暂停，请核对后手动恢复。");
             }
             if (!string.Equals(_reportedBundle, poll.Bundle, StringComparison.Ordinal))
             {
@@ -282,7 +282,7 @@ internal sealed class MonitorService : IAsyncDisposable
                     _store.SaveState(_engine.State);
                     _store.AppendOrder(order);
                     WriteLog($"下注已受理：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，第 {order.Attempt} 档。");
-                    if (lateConfirmation) WriteLog($"桌台 {order.TableId} 的迟到确认已恢复订单状态；新订单仍保持暂停，请核对后手动恢复。");
+                    if (lateConfirmation) WriteLog($"桌台 {order.TableId} 的迟到确认已恢复订单状态；自动下单仍保持暂停，请核对后手动恢复。");
                     if (settings.PlayAcceptedSound) _notifier.NotifyAccepted(order);
                 }
                 else
@@ -315,7 +315,7 @@ internal sealed class MonitorService : IAsyncDisposable
             {
                 if (settings.Mode == MonitorMode.Live)
                 {
-                    if (_ordersPaused) WriteLog($"订单已暂停，本局不发送：{requested.Candidate.TableName}。");
+                    if (_ordersPaused) WriteLog($"自动下单已暂停，本局不发送：{requested.Candidate.TableName}。");
                     else _candidates.Enqueue(requested.Candidate);
                 }
                 else
