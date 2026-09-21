@@ -206,6 +206,12 @@ var tests = new (string Name, Action Run)[]
         YaxinSettings settings = store.LoadSettings();
         Equal(FixedStrategy.Id, settings.Strategy.Id);
     })),
+    ("Known frontend bundles are supported", () =>
+    {
+        True(FrontendCompatibility.IsSupported("index.fd7e6.js", "index.0e81c.js"));
+        True(FrontendCompatibility.IsSupported("index.0e81c.js", "index.fd7e6.js"));
+        False(FrontendCompatibility.IsSupported("index.unknown.js", "index.fd7e6.js"));
+    }),
     ("Custom settings persist all strategy fields", () => WithStore(store =>
     {
         var expected = new StrategySettings

@@ -29,6 +29,7 @@ internal sealed class MonitorService : IAsyncDisposable
     private Task? _worker;
     private volatile bool _ordersPaused = true;
     private long _nextSubmitTimestamp;
+    private string? _reportedUnsupportedBundle;
 
     public event Action<string>? LogReceived;
     public event Action<string>? StatusChanged;
@@ -169,8 +170,20 @@ internal sealed class MonitorService : IAsyncDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             BridgePoll poll = await adapter.PollAsync(cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(poll.Bundle, settings.AllowedBundle, StringComparison.Ordinal))
-                throw new InvalidDataException($"网站前端版本为 {poll.Bundle}，允许版本为 {settings.AllowedBundle}。自动下注已禁用。");
+            if (!FrontendCompatibility.IsSupported(poll.Bundle, settings.AllowedBundle))
+            {
+                if (!string.Equals(_reportedUnsupportedBundle, poll.Bundle, StringComparison.Ordinal))
+                {
+                    _reportedUnsupportedBundle = poll.Bundle;
+                    if (settings.Mode == MonitorMode.Live) PauseOrders("网站前端版本尚未验证");
+                    WriteLog($"网站前端版本为 {poll.Bundle}，当前程序尚未验证兼容性。自动下注已禁用，请升级程序。");
+                }
+                StatusChanged?.Invoke($"前端版本不兼容 · {poll.Bundle}");
+                PublishSnapshot(poll, settings);
+                await Task.Delay(1_000, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            _reportedUnsupportedBundle = null;
 
             HandleBridgeEvents(poll.Events, settings);
             if (poll.Ready)
