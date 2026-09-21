@@ -84,6 +84,26 @@ var tests = new (string Name, Action Run)[]
         snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 1] };
         False(engine.Observe(snapshot, Now().AddMinutes(1)).OfType<BetRequestedEvent>().Any());
     }),
+    ("Late acceptance recovers an unknown order", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(bet, Now());
+        engine.MarkUnknown(bet.OrderKey, Now().AddSeconds(8));
+        engine.MarkAccepted(bet.OrderKey, Now().AddSeconds(9));
+        Equal("Accepted", engine.State.Orders[bet.OrderKey].Status);
+        Equal(ChaseStatus.AwaitingSettlement, engine.State.Tables[1].ActiveChase!.Status);
+    }),
+    ("Late rejection recovers an unknown order", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(bet, Now());
+        engine.MarkUnknown(bet.OrderKey, Now().AddSeconds(8));
+        engine.MarkRejected(bet.OrderKey, -96, Now().AddSeconds(9));
+        Equal("Rejected", engine.State.Orders[bet.OrderKey].Status);
+        Equal(ChaseStatus.Ready, engine.State.Tables[1].ActiveChase!.Status);
+    }),
     ("New shoe resets old task", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);

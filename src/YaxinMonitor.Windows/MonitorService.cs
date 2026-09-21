@@ -21,6 +21,7 @@ internal sealed class MonitorService : IAsyncDisposable
     private readonly StateStore _store;
     private readonly AcceptedNotifier _notifier = new();
     private readonly ConcurrentQueue<BetCandidate> _candidates = new();
+    private readonly ConcurrentDictionary<long, string> _quarantinedTables = new();
     private readonly object _settingsLock = new();
     private YaxinSettings _settings;
     private StrategyEngine _engine;
@@ -56,8 +57,9 @@ internal sealed class MonitorService : IAsyncDisposable
     {
         if (IsRunning) throw new InvalidOperationException("请先停止监控再进行订单对账。");
         _engine.ResolveUnknownOrder(orderKey, resolution, DateTimeOffset.Now);
-        _store.SaveState(_engine.State);
         OrderState order = _engine.State.Orders[orderKey];
+        _quarantinedTables.TryRemove(order.TableId, out _);
+        _store.SaveState(_engine.State);
         _store.AppendOrder(order);
         string result = resolution == ManualOrderResolution.ConfirmedNotPlaced ? "人工确认未下注" : "人工确认已结算";
         WriteLog($"订单对账完成：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，{result}。订单键：{order.OrderKey}");
@@ -81,6 +83,7 @@ internal sealed class MonitorService : IAsyncDisposable
         _engine = new StrategyEngine(new EngineState(), settings.Strategy, settings.MinimumRemainingMilliseconds);
         lock (_settingsLock) _settings = settings;
         _candidates.Clear();
+        _quarantinedTables.Clear();
         _ordersPaused = settings.Mode == MonitorMode.Live;
         _store.SaveState(_engine.State);
         WriteLog("已清空本地运行状态，将按网页最新全桌数据重新开始。");
@@ -115,6 +118,7 @@ internal sealed class MonitorService : IAsyncDisposable
         lock (_settingsLock) settings = _settings;
         if (settings.Mode == MonitorMode.Live) _ordersPaused = true;
         _candidates.Clear();
+        _quarantinedTables.Clear();
         _cancellation = new CancellationTokenSource();
         _worker = RunAsync(chromeProfileDirectory, _cancellation.Token);
     }
@@ -172,10 +176,21 @@ internal sealed class MonitorService : IAsyncDisposable
             if (poll.Ready)
             {
                 foreach (TableSnapshot table in poll.Tables.OrderBy(table => table.TableId))
-                    HandleEngineEvents(_engine.Observe(table, DateTimeOffset.Now), settings);
+                {
+                    if (_quarantinedTables.ContainsKey(table.TableId)) continue;
+                    try
+                    {
+                        HandleEngineEvents(_engine.Observe(table, DateTimeOffset.Now), settings);
+                    }
+                    catch (InvalidDataException exception)
+                    {
+                        QuarantineTable(table.TableId, exception.Message, settings);
+                    }
+                }
                 await DispatchOneAsync(adapter, poll, settings, cancellationToken).ConfigureAwait(false);
                 CheckAckTimeout(settings);
-                StatusChanged?.Invoke($"已连接 · {poll.Tables.Length} 桌");
+                string isolated = _quarantinedTables.IsEmpty ? "" : $" · 已隔离 {_quarantinedTables.Count} 桌";
+                StatusChanged?.Invoke($"已连接 · {poll.Tables.Length} 桌{isolated}");
             }
             else
             {
@@ -195,18 +210,27 @@ internal sealed class MonitorService : IAsyncDisposable
         foreach (BridgeEvent item in events)
         {
             if (item.Type != "betAck" || string.IsNullOrEmpty(item.OrderKey)) continue;
-            if (!_engine.State.Orders.TryGetValue(item.OrderKey, out OrderState? order) || order.Status != "Submitted") continue;
+            if (!_engine.State.Orders.TryGetValue(item.OrderKey, out OrderState? order)
+                || order.Status is not ("Submitted" or "Unknown")) continue;
+            bool lateConfirmation = order.Status == "Unknown";
+            if (lateConfirmation && item.ErrorCode == 0 && _quarantinedTables.ContainsKey(order.TableId))
+            {
+                WriteLog($"迟到确认显示桌台 {order.TableId} 的订单已受理，但桌台数据已异常，仍需人工对账。");
+                continue;
+            }
             if (item.ErrorCode == 0)
             {
                 _engine.MarkAccepted(item.OrderKey, DateTimeOffset.Now);
                 _store.SaveState(_engine.State);
                 _store.AppendOrder(order);
                 WriteLog($"下注已受理：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，第 {order.Attempt} 档。");
+                if (lateConfirmation) WriteLog($"桌台 {order.TableId} 的迟到确认已恢复订单状态；新订单仍保持暂停，请核对后手动恢复。");
                 if (settings.PlayAcceptedSound) _notifier.NotifyAccepted(order);
             }
             else
             {
                 _engine.MarkRejected(item.OrderKey, item.ErrorCode, DateTimeOffset.Now);
+                _quarantinedTables.TryRemove(order.TableId, out _);
                 _store.SaveState(_engine.State);
                 _store.AppendOrder(order);
                 string detail = string.IsNullOrWhiteSpace(item.ErrorMessage) ? "" : $"：{item.ErrorMessage}";
@@ -318,6 +342,22 @@ internal sealed class MonitorService : IAsyncDisposable
         _store.SaveState(_engine.State);
         _store.AppendOrder(timedOut);
         if (settings.Mode == MonitorMode.Live) PauseOrders("订单确认超时，状态不明");
+    }
+
+    private void QuarantineTable(long tableId, string reason, YaxinSettings settings)
+    {
+        if (_engine.State.Tables.TryGetValue(tableId, out TableRuntimeState? table)
+            && table.ActiveChase is { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement, PendingOrderKey: not null } chase)
+        {
+            _engine.MarkUnknown(chase.PendingOrderKey, DateTimeOffset.Now);
+            OrderState order = _engine.State.Orders[chase.PendingOrderKey];
+            _store.SaveState(_engine.State);
+            _store.AppendOrder(order);
+        }
+
+        if (!_quarantinedTables.TryAdd(tableId, reason)) return;
+        if (settings.Mode == MonitorMode.Live) PauseOrders($"桌台 {tableId} 数据异常");
+        WriteLog($"桌台 {tableId} 已隔离，其他桌台继续监控：{reason}");
     }
 
     private void DelaySubmissions(TimeSpan delay)
