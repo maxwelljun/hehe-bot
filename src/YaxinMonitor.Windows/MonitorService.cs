@@ -22,6 +22,7 @@ internal sealed class MonitorService : IAsyncDisposable
     private readonly AcceptedNotifier _notifier = new();
     private readonly ConcurrentQueue<BetCandidate> _candidates = new();
     private readonly ConcurrentDictionary<long, string> _quarantinedTables = new();
+    private readonly object _engineLock = new();
     private readonly object _settingsLock = new();
     private YaxinSettings _settings;
     private StrategyEngine _engine;
@@ -50,31 +51,45 @@ internal sealed class MonitorService : IAsyncDisposable
     public bool IsRunning => _worker is { IsCompleted: false };
     public bool OrdersPaused => _ordersPaused;
 
-    public IReadOnlyList<UnknownOrderView> GetUnknownOrders() => _engine.State.Orders.Values
-        .Where(order => order.Status == "Unknown")
-        .OrderBy(order => order.CreatedAt)
-        .Select(order => new UnknownOrderView(order.OrderKey, order.TableId, order.Side, order.Amount, order.Attempt, order.CreatedAt))
-        .ToArray();
+    public IReadOnlyList<UnknownOrderView> GetUnknownOrders()
+    {
+        lock (_engineLock)
+            return _engine.State.Orders.Values
+                .Where(order => order.Status == "Unknown")
+                .OrderBy(order => order.CreatedAt)
+                .Select(order => new UnknownOrderView(order.OrderKey, order.TableId, order.Side, order.Amount, order.Attempt, order.CreatedAt))
+                .ToArray();
+    }
 
     public void ResolveUnknownOrder(string orderKey, ManualOrderResolution resolution)
     {
-        if (IsRunning) throw new InvalidOperationException("请先停止监控再进行订单对账。");
-        _engine.ResolveUnknownOrder(orderKey, resolution, DateTimeOffset.Now);
-        OrderState order = _engine.State.Orders[orderKey];
-        _quarantinedTables.TryRemove(order.TableId, out _);
-        _store.SaveState(_engine.State);
-        _store.AppendOrder(order);
+        OrderState order;
+        bool tableCanResume;
+        lock (_engineLock)
+        {
+            _engine.ResolveUnknownOrder(orderKey, resolution, DateTimeOffset.Now);
+            order = _engine.State.Orders[orderKey];
+            tableCanResume = !_engine.State.Orders.Values.Any(candidate =>
+                candidate.TableId == order.TableId && candidate.Status == "Unknown");
+            _store.SaveState(_engine.State);
+            _store.AppendOrder(order);
+        }
+        if (tableCanResume) _quarantinedTables.TryRemove(order.TableId, out _);
         string result = resolution == ManualOrderResolution.ConfirmedNotPlaced ? "人工确认未下注" : "人工确认已结算";
         WriteLog($"订单对账完成：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，{result}。订单键：{order.OrderKey}");
+        if (tableCanResume) WriteLog($"桌台 {order.TableId} 已解除隔离，继续监控和处理新订单。");
     }
 
     public void UpdateSettings(YaxinSettings settings)
     {
         if (IsRunning) throw new InvalidOperationException("请先停止监控再修改设置。");
         settings.Validate();
-        _engine = new StrategyEngine(_engine.State, settings.Strategy, settings.MinimumRemainingMilliseconds);
+        lock (_engineLock)
+        {
+            _engine = new StrategyEngine(_engine.State, settings.Strategy, settings.MinimumRemainingMilliseconds);
+            _store.SaveState(_engine.State);
+        }
         lock (_settingsLock) _settings = settings;
-        _store.SaveState(_engine.State);
         if (settings.Mode == MonitorMode.Live) _ordersPaused = true;
         WriteLog("当前策略：" + settings.Strategy.Summary + "。");
     }
@@ -83,12 +98,15 @@ internal sealed class MonitorService : IAsyncDisposable
     {
         if (IsRunning) throw new InvalidOperationException("请先停止监控再强制启动。");
         settings.Validate();
-        _engine = new StrategyEngine(new EngineState(), settings.Strategy, settings.MinimumRemainingMilliseconds);
+        lock (_engineLock)
+        {
+            _engine = new StrategyEngine(new EngineState(), settings.Strategy, settings.MinimumRemainingMilliseconds);
+            _store.SaveState(_engine.State);
+        }
         lock (_settingsLock) _settings = settings;
         _candidates.Clear();
         _quarantinedTables.Clear();
         _ordersPaused = settings.Mode == MonitorMode.Live;
-        _store.SaveState(_engine.State);
         WriteLog("已清空本地运行状态，将按网页最新全桌数据重新开始。");
         WriteLog("当前策略：" + settings.Strategy.Summary + "。");
     }
@@ -220,7 +238,8 @@ internal sealed class MonitorService : IAsyncDisposable
                     if (_quarantinedTables.ContainsKey(table.TableId)) continue;
                     try
                     {
-                        HandleEngineEvents(_engine.Observe(table, DateTimeOffset.Now), settings);
+                        lock (_engineLock)
+                            HandleEngineEvents(_engine.Observe(table, DateTimeOffset.Now), settings);
                     }
                     catch (InvalidDataException exception)
                     {
@@ -248,35 +267,38 @@ internal sealed class MonitorService : IAsyncDisposable
 
     private void HandleBridgeEvents(IEnumerable<BridgeEvent> events, YaxinSettings settings)
     {
-        foreach (BridgeEvent item in events)
+        lock (_engineLock)
         {
-            if (item.Type != "betAck" || string.IsNullOrEmpty(item.OrderKey)) continue;
-            if (!_engine.State.Orders.TryGetValue(item.OrderKey, out OrderState? order)
-                || order.Status is not ("Submitted" or "Unknown")) continue;
-            bool lateConfirmation = order.Status == "Unknown";
-            if (item.ErrorCode == 0)
+            foreach (BridgeEvent item in events)
             {
-                _engine.MarkAccepted(item.OrderKey, DateTimeOffset.Now);
-                _quarantinedTables.TryRemove(order.TableId, out _);
-                _store.SaveState(_engine.State);
-                _store.AppendOrder(order);
-                WriteLog($"下注已受理：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，第 {order.Attempt} 档。");
-                if (lateConfirmation) WriteLog($"桌台 {order.TableId} 的迟到确认已恢复订单状态；新订单仍保持暂停，请核对后手动恢复。");
-                if (settings.PlayAcceptedSound) _notifier.NotifyAccepted(order);
-            }
-            else
-            {
-                _engine.MarkRejected(item.OrderKey, item.ErrorCode, DateTimeOffset.Now);
-                _quarantinedTables.TryRemove(order.TableId, out _);
-                _store.SaveState(_engine.State);
-                _store.AppendOrder(order);
-                string detail = string.IsNullOrWhiteSpace(item.ErrorMessage) ? "" : $"：{item.ErrorMessage}";
-                WriteLog($"下注被拒绝：桌台 {order.TableId}，错误码 {item.ErrorCode}{detail}。");
-                if (item.ErrorCode == -140) PauseOrders("网站要求验证码");
-                if (item.ErrorCode == -96)
+                if (item.Type != "betAck" || string.IsNullOrEmpty(item.OrderKey)) continue;
+                if (!_engine.State.Orders.TryGetValue(item.OrderKey, out OrderState? order)
+                    || order.Status is not ("Submitted" or "Unknown")) continue;
+                bool lateConfirmation = order.Status == "Unknown";
+                if (item.ErrorCode == 0)
                 {
-                    DelaySubmissions(TimeSpan.FromSeconds(10));
-                    WriteLog("网站限制投注频率，新的订单延迟 10 秒发送。");
+                    _engine.MarkAccepted(item.OrderKey, DateTimeOffset.Now);
+                    _quarantinedTables.TryRemove(order.TableId, out _);
+                    _store.SaveState(_engine.State);
+                    _store.AppendOrder(order);
+                    WriteLog($"下注已受理：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，第 {order.Attempt} 档。");
+                    if (lateConfirmation) WriteLog($"桌台 {order.TableId} 的迟到确认已恢复订单状态；新订单仍保持暂停，请核对后手动恢复。");
+                    if (settings.PlayAcceptedSound) _notifier.NotifyAccepted(order);
+                }
+                else
+                {
+                    _engine.MarkRejected(item.OrderKey, item.ErrorCode, DateTimeOffset.Now);
+                    _quarantinedTables.TryRemove(order.TableId, out _);
+                    _store.SaveState(_engine.State);
+                    _store.AppendOrder(order);
+                    string detail = string.IsNullOrWhiteSpace(item.ErrorMessage) ? "" : $"：{item.ErrorMessage}";
+                    WriteLog($"下注被拒绝：桌台 {order.TableId}，错误码 {item.ErrorCode}{detail}。");
+                    if (item.ErrorCode == -140) PauseOrders("网站要求验证码");
+                    if (item.ErrorCode == -96)
+                    {
+                        DelaySubmissions(TimeSpan.FromSeconds(10));
+                        WriteLog("网站限制投注频率，新的订单延迟 10 秒发送。");
+                    }
                 }
             }
         }
@@ -317,18 +339,23 @@ internal sealed class MonitorService : IAsyncDisposable
     private async Task DispatchOneAsync(SiteRuntimeAdapter adapter, BridgePoll poll, YaxinSettings settings, CancellationToken cancellationToken)
     {
         if (settings.Mode != MonitorMode.Live || _ordersPaused) return;
-        if (_engine.State.Orders.Values.Any(order => order.Status == "Submitted")) return;
         if (Stopwatch.GetTimestamp() < _nextSubmitTimestamp) return;
-        if (!_candidates.TryDequeue(out BetCandidate? candidate)) return;
+        BetCandidate candidate;
+        string? validationError;
+        lock (_engineLock)
+        {
+            if (_engine.State.Orders.Values.Any(order => order.Status == "Submitted")) return;
+            if (!_candidates.TryDequeue(out candidate!)) return;
 
-        TableSnapshot? table = poll.Tables.FirstOrDefault(value => value.TableId == candidate.TableId);
-        string? validationError = ValidateCandidate(candidate, table, poll.Balance, settings);
-        _engine.MarkSubmitted(candidate, DateTimeOffset.Now);
-        _store.SaveState(_engine.State);
+            TableSnapshot? table = poll.Tables.FirstOrDefault(value => value.TableId == candidate.TableId);
+            validationError = ValidateCandidate(candidate, table, poll.Balance, settings);
+            _engine.MarkSubmitted(candidate, DateTimeOffset.Now);
+            if (validationError is not null)
+                _engine.MarkRejected(candidate.OrderKey, -9001, DateTimeOffset.Now);
+            _store.SaveState(_engine.State);
+        }
         if (validationError is not null)
         {
-            _engine.MarkRejected(candidate.OrderKey, -9001, DateTimeOffset.Now);
-            _store.SaveState(_engine.State);
             WriteLog("跳过下注：" + validationError);
             return;
         }
@@ -344,8 +371,11 @@ internal sealed class MonitorService : IAsyncDisposable
         }
         if (!result.Submitted)
         {
-            _engine.MarkRejected(candidate.OrderKey, -9000, DateTimeOffset.Now);
-            _store.SaveState(_engine.State);
+            lock (_engineLock)
+            {
+                _engine.MarkRejected(candidate.OrderKey, -9000, DateTimeOffset.Now);
+                _store.SaveState(_engine.State);
+            }
             WriteLog("桥接未发送：" + result.Error);
         }
         else
@@ -372,25 +402,32 @@ internal sealed class MonitorService : IAsyncDisposable
 
     private void CheckAckTimeout()
     {
-        OrderState? timedOut = _engine.State.Orders.Values.FirstOrDefault(order => order.Status == "Submitted"
-            && DateTimeOffset.Now - (order.UpdatedAt ?? order.CreatedAt) > TimeSpan.FromSeconds(8));
-        if (timedOut is null) return;
-        _engine.MarkUnknown(timedOut.OrderKey, DateTimeOffset.Now);
-        _store.SaveState(_engine.State);
-        _store.AppendOrder(timedOut);
+        OrderState? timedOut;
+        lock (_engineLock)
+        {
+            timedOut = _engine.State.Orders.Values.FirstOrDefault(order => order.Status == "Submitted"
+                && DateTimeOffset.Now - (order.UpdatedAt ?? order.CreatedAt) > TimeSpan.FromSeconds(8));
+            if (timedOut is null) return;
+            _engine.MarkUnknown(timedOut.OrderKey, DateTimeOffset.Now);
+            _store.SaveState(_engine.State);
+            _store.AppendOrder(timedOut);
+        }
         if (_quarantinedTables.TryAdd(timedOut.TableId, "订单确认超时，状态不明"))
             WriteLog($"桌台 {timedOut.TableId} 已隔离：订单确认超时，其他桌台继续处理新订单。");
     }
 
     private void QuarantineTable(long tableId, string reason)
     {
-        if (_engine.State.Tables.TryGetValue(tableId, out TableRuntimeState? table)
-            && table.ActiveChase is { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement, PendingOrderKey: not null } chase)
+        lock (_engineLock)
         {
-            _engine.MarkUnknown(chase.PendingOrderKey, DateTimeOffset.Now);
-            OrderState order = _engine.State.Orders[chase.PendingOrderKey];
-            _store.SaveState(_engine.State);
-            _store.AppendOrder(order);
+            if (_engine.State.Tables.TryGetValue(tableId, out TableRuntimeState? table)
+                && table.ActiveChase is { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement, PendingOrderKey: not null } chase)
+            {
+                _engine.MarkUnknown(chase.PendingOrderKey, DateTimeOffset.Now);
+                OrderState order = _engine.State.Orders[chase.PendingOrderKey];
+                _store.SaveState(_engine.State);
+                _store.AppendOrder(order);
+            }
         }
 
         if (!_quarantinedTables.TryAdd(tableId, reason)) return;
@@ -399,8 +436,11 @@ internal sealed class MonitorService : IAsyncDisposable
 
     private void QuarantineUnknownTables()
     {
-        foreach (OrderState order in _engine.State.Orders.Values.Where(order => order.Status == "Unknown"))
-            _quarantinedTables.TryAdd(order.TableId, "存在状态不明的订单");
+        lock (_engineLock)
+        {
+            foreach (OrderState order in _engine.State.Orders.Values.Where(order => order.Status == "Unknown"))
+                _quarantinedTables.TryAdd(order.TableId, "存在状态不明的订单");
+        }
     }
 
     private void DelaySubmissions(TimeSpan delay)
@@ -411,18 +451,26 @@ internal sealed class MonitorService : IAsyncDisposable
 
     private void PublishSnapshot(BridgePoll poll, YaxinSettings settings)
     {
-        var rows = poll.Tables.Select(table =>
+        TableViewState[] rows;
+        decimal dailyStake;
+        decimal reservedStake;
+        lock (_engineLock)
         {
-            LatestRun run = LatestRun.From(table.History);
-            _engine.State.Tables.TryGetValue(table.TableId, out TableRuntimeState? runtime);
-            string chase = runtime?.ActiveChase is { } active
-                ? $"第 {active.AttemptIndex + 1} 档 / {active.Status}" : "-";
-            string latest = run.Count == 0 ? "-" : $"{OutcomeText(run.Side)} × {run.Count}";
-            return new TableViewState(table.TableId, table.TableName, table.State, table.ShoeSeq, table.GameSeq,
-                latest, run.Count, chase, table.RemainingMilliseconds / 1000);
-        }).OrderByDescending(row => row.LatestRunCount).ThenBy(row => row.TableId).ToArray();
+            rows = poll.Tables.Select(table =>
+            {
+                LatestRun run = LatestRun.From(table.History);
+                _engine.State.Tables.TryGetValue(table.TableId, out TableRuntimeState? runtime);
+                string chase = runtime?.ActiveChase is { } active
+                    ? $"第 {active.AttemptIndex + 1} 档 / {active.Status}" : "-";
+                string latest = run.Count == 0 ? "-" : $"{OutcomeText(run.Side)} × {run.Count}";
+                return new TableViewState(table.TableId, table.TableName, table.State, table.ShoeSeq, table.GameSeq,
+                    latest, run.Count, chase, table.RemainingMilliseconds / 1000);
+            }).OrderByDescending(row => row.LatestRunCount).ThenBy(row => row.TableId).ToArray();
+            dailyStake = _engine.State.DailyAcceptedStake;
+            reservedStake = _engine.ReservedStake;
+        }
         SnapshotChanged?.Invoke(new ServiceSnapshot(true, poll.Ready, poll.Bundle, poll.Balance,
-            _engine.State.DailyAcceptedStake, _engine.ReservedStake, _ordersPaused, rows));
+            dailyStake, reservedStake, _ordersPaused, rows));
     }
 
     private void WriteLog(string message)

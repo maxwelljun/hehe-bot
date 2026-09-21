@@ -271,7 +271,7 @@ internal sealed class MainForm : Form
 
             int remaining = _service.GetUnknownOrders().Count;
             if (remaining == 0)
-                MessageBox.Show("状态不明订单已全部处理，现在可以保存新策略。", "订单对账",
+                MessageBox.Show("状态不明订单已全部处理，对应桌台已恢复监控和新订单处理。", "订单对账",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             else
                 AddLog($"仍有 {remaining} 笔状态不明订单未处理。");
@@ -390,7 +390,6 @@ internal sealed class MainForm : Form
         _minimumSeconds.Enabled = enabled;
         _playSound.Enabled = enabled;
         _save.Enabled = enabled;
-        _reconcile.Enabled = enabled;
         _forceStart.Enabled = enabled;
     }
 
