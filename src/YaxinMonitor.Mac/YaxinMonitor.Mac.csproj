@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>YaxinMonitor</AssemblyName>
+    <RootNamespace>YaxinMonitor.Mac</RootNamespace>
+    <Version>1.2.9</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../YaxinMonitor.Core/YaxinMonitor.Core.csproj" />
+    <Compile Include="../YaxinMonitor.Windows/CdpClient.cs" Link="Runtime/CdpClient.cs" />
+    <Compile Include="../YaxinMonitor.Windows/MonitorService.cs" Link="Runtime/MonitorService.cs" />
+    <Compile Include="../YaxinMonitor.Windows/SiteRuntimeAdapter.cs" Link="Runtime/SiteRuntimeAdapter.cs" />
+    <EmbeddedResource Include="../YaxinMonitor.Windows/SiteBridge.js" Link="Runtime/SiteBridge.js" />
+    <EmbeddedResource Include="Web/index.html" />
+  </ItemGroup>
+</Project>

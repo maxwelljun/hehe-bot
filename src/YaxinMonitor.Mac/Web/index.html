@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>亚信全桌监控</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f5f6;
+      --surface: #ffffff;
+      --line: #d9dee2;
+      --text: #172027;
+      --muted: #66727a;
+      --green: #17734b;
+      --green-hover: #105d3c;
+      --red: #a33a32;
+      --amber: #9a6414;
+      --blue: #23658a;
+      --control: #f8f9fa;
+      --shadow: 0 1px 2px rgba(23, 32, 39, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+      letter-spacing: 0;
+    }
+    header {
+      height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 20px;
+      background: #172027;
+      color: #fff;
+    }
+    h1 { margin: 0; font-size: 17px; font-weight: 650; }
+    .header-status { display: flex; align-items: center; gap: 8px; min-width: 0; color: #d8e0e4; }
+    .header-status span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dot { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #81909a; }
+    .dot.running { background: #38b978; }
+    main { max-width: 1440px; margin: 0 auto; padding: 14px; }
+    .toolbar, .statusbar, .workspace, .log-panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+    .toolbar { padding: 12px 14px; }
+    .settings {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(90px, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; min-width: 0; }
+    input, select, button {
+      height: 34px;
+      border: 1px solid #bbc4ca;
+      border-radius: 5px;
+      background: var(--control);
+      color: var(--text);
+      font: inherit;
+      letter-spacing: 0;
+    }
+    input, select { width: 100%; padding: 0 9px; }
+    input:focus, select:focus { outline: 2px solid rgba(35, 101, 138, .2); border-color: var(--blue); }
+    input:disabled, select:disabled { color: #8b959b; background: #eef1f2; }
+    .check { display: flex; align-items: center; gap: 7px; height: 34px; color: var(--text); font-size: 13px; }
+    .check input { width: 16px; height: 16px; margin: 0; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line); }
+    button { padding: 0 13px; cursor: pointer; background: #fff; }
+    button:hover:not(:disabled) { border-color: #7f8c94; background: #f5f7f8; }
+    button:disabled { cursor: default; opacity: .48; }
+    button.primary { color: #fff; border-color: var(--green); background: var(--green); }
+    button.primary:hover:not(:disabled) { border-color: var(--green-hover); background: var(--green-hover); }
+    button.danger { color: var(--red); border-color: #d9aaa6; }
+    .actions .spacer { flex: 1 1 24px; }
+    .statusbar { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin-top: 10px; padding: 9px 14px; color: var(--muted); }
+    .metric strong { color: var(--text); font-weight: 650; }
+    .workspace { margin-top: 10px; overflow: hidden; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; min-height: 42px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+    h2 { margin: 0; font-size: 14px; }
+    .count { color: var(--muted); font-size: 12px; }
+    .table-scroll { overflow: auto; max-height: calc(100vh - 410px); min-height: 220px; }
+    table { width: 100%; border-collapse: collapse; white-space: nowrap; }
+    th, td { height: 36px; padding: 0 12px; text-align: left; border-bottom: 1px solid #e8ebed; }
+    th { position: sticky; top: 0; z-index: 1; background: #f7f8f9; color: var(--muted); font-size: 12px; font-weight: 600; }
+    tbody tr:hover { background: #f7faf8; }
+    .run { font-weight: 650; color: var(--blue); }
+    .empty { padding: 36px 14px; text-align: center; color: var(--muted); }
+    .log-panel { margin-top: 10px; }
+    pre { height: 150px; overflow: auto; margin: 0; padding: 10px 14px; color: #dce5e9; background: #20282d; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+    dialog { width: min(620px, calc(100vw - 30px)); border: 1px solid var(--line); border-radius: 6px; padding: 0; box-shadow: 0 18px 50px rgba(0,0,0,.22); }
+    dialog::backdrop { background: rgba(15, 22, 27, .35); }
+    .dialog-body { padding: 18px; }
+    .dialog-body p { margin: 8px 0; line-height: 1.55; }
+    .order-detail { padding: 10px 12px; margin: 12px 0; background: #f4f6f7; border: 1px solid var(--line); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.6; overflow-wrap: anywhere; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .toast { position: fixed; right: 18px; bottom: 18px; max-width: min(440px, calc(100vw - 36px)); padding: 11px 14px; border-radius: 5px; color: #fff; background: #243039; box-shadow: 0 8px 24px rgba(0,0,0,.2); opacity: 0; transform: translateY(8px); pointer-events: none; transition: .18s; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { background: var(--red); }
+    @media (max-width: 1050px) { .settings { grid-template-columns: repeat(4, minmax(120px, 1fr)); } }
+    @media (max-width: 650px) {
+      header { padding: 0 12px; }
+      main { padding: 8px; }
+      .settings { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .actions button { flex: 1 1 135px; }
+      .actions .spacer { display: none; }
+      .table-scroll { max-height: 46vh; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>亚信全桌监控 <small id="version"></small></h1>
+    <div class="header-status"><span class="dot" id="statusDot"></span><span id="status">正在连接控制服务...</span></div>
+  </header>
+  <main>
+    <section class="toolbar">
+      <div class="settings" id="settings">
+        <label>模式<select id="mode"><option value="ReadOnly">只读</option><option value="Simulation">模拟</option><option value="Live">真实</option></select></label>
+        <label>触发走势<select id="triggerSide"><option value="Both">庄和闲</option><option value="BankerOnly">仅庄</option><option value="PlayerOnly">仅闲</option></select></label>
+        <label>连续次数<input id="streakLength" type="number" min="2" max="20"></label>
+        <label>方向<select id="direction"><option value="Opposite">反向</option><option value="Follow">顺向</option></select></label>
+        <label>金额序列<input id="stakes" inputmode="decimal"></label>
+        <label>每日上限<input id="dailyStakeLimit" type="number" min="0" step="1"></label>
+        <label>在途上限<input id="maxReservedStake" type="number" min="0" step="1"></label>
+        <label>安全余量（秒）<input id="minimumSeconds" type="number" min="1" max="60"></label>
+      </div>
+      <div class="actions">
+        <label class="check"><input id="playAcceptedSound" type="checkbox">下注及结算语音</label>
+        <button id="save">保存设置</button>
+        <button id="start" class="primary">启动监控</button>
+        <button id="stop">停止监控</button>
+        <button id="toggleOrders">恢复自动下单</button>
+        <button id="reconcile">订单对账</button>
+        <span class="spacer"></span>
+        <button id="resetStart" class="danger">重置状态并启动</button>
+        <button id="openData">数据目录</button>
+        <button id="quit">退出程序</button>
+      </div>
+    </section>
+
+    <section class="statusbar">
+      <span class="metric">桌台 <strong id="tableCount">0</strong></span>
+      <span class="metric">余额 <strong id="balance">0</strong></span>
+      <span class="metric">今日 <strong id="dailyStake">0</strong></span>
+      <span class="metric">在途 <strong id="reservedStake">0</strong></span>
+      <span class="metric">前端 <strong id="bundle">-</strong></span>
+    </section>
+
+    <section class="workspace">
+      <div class="section-head"><h2>全桌走势</h2><span class="count" id="isolated"></span></div>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>桌台 ID</th><th>桌台</th><th>状态</th><th>牌靴</th><th>局号</th><th>最新走势</th><th>追注任务</th><th>剩余秒</th></tr></thead>
+          <tbody id="tables"><tr><td colspan="8" class="empty">等待全桌数据</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="log-panel">
+      <div class="section-head"><h2>运行记录</h2></div>
+      <pre id="logs"></pre>
+    </section>
+  </main>
+
+  <dialog id="orderDialog">
+    <div class="dialog-body">
+      <h2>订单对账</h2>
+      <p>请先在网站订单记录中核对，再选择处理结果。</p>
+      <div class="order-detail" id="orderDetail"></div>
+    </div>
+    <div class="dialog-actions">
+      <button data-resolution="ConfirmedNotPlaced">确认未下注</button>
+      <button data-resolution="ConfirmedSettled">确认已结算</button>
+      <button id="skipOrder">暂不处理</button>
+    </div>
+  </dialog>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const token = '__CONTROL_TOKEN__';
+    const ids = ['mode','triggerSide','streakLength','direction','stakes','dailyStakeLimit','maxReservedStake','minimumSeconds','playAcceptedSound'];
+    let settingsLoaded = false;
+    let unknownOrders = [];
+    let currentOrder = null;
+    let toastTimer;
+
+    const $ = id => document.getElementById(id);
+    const value = id => $(id).value;
+    const number = id => Number(value(id));
+
+    async function api(path, body = {}) {
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Control-Token': token},
+        body: JSON.stringify(body)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '操作失败');
+      return data;
+    }
+
+    function formSettings() {
+      return {
+        mode: value('mode'), triggerSide: value('triggerSide'), streakLength: number('streakLength'),
+        direction: value('direction'), stakes: value('stakes'), dailyStakeLimit: number('dailyStakeLimit'),
+        maxReservedStake: number('maxReservedStake'), minimumSeconds: number('minimumSeconds'),
+        playAcceptedSound: $('playAcceptedSound').checked
+      };
+    }
+
+    function loadSettings(settings) {
+      for (const id of ids) {
+        if (id === 'playAcceptedSound') $(id).checked = settings[id];
+        else $(id).value = settings[id];
+      }
+      settingsLoaded = true;
+    }
+
+    function textCell(row, text, className = '') {
+      const cell = row.insertCell();
+      cell.textContent = text ?? '-';
+      if (className) cell.className = className;
+    }
+
+    function renderTables(tables) {
+      const body = $('tables');
+      body.replaceChildren();
+      if (!tables.length) {
+        const row = body.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 8;
+        cell.className = 'empty';
+        cell.textContent = '等待全桌数据';
+        return;
+      }
+      for (const item of tables) {
+        const row = body.insertRow();
+        textCell(row, item.tableId);
+        textCell(row, item.name);
+        textCell(row, item.state);
+        textCell(row, item.shoeSeq);
+        textCell(row, item.gameSeq);
+        textCell(row, item.latestRun, 'run');
+        textCell(row, item.chase);
+        textCell(row, item.remainingSeconds);
+      }
+    }
+
+    function render(state) {
+      if (!settingsLoaded) loadSettings(state.settings);
+      $('version').textContent = 'v' + state.version;
+      $('status').textContent = state.status;
+      $('statusDot').classList.toggle('running', state.running);
+      for (const id of ids) $(id).disabled = state.running;
+      $('save').disabled = state.running;
+      $('start').disabled = state.running;
+      $('stop').disabled = !state.running;
+      $('resetStart').disabled = state.running;
+      $('toggleOrders').disabled = !state.running || state.settings.mode !== 'Live';
+      $('toggleOrders').textContent = state.ordersPaused ? '恢复自动下单' : '暂停自动下单';
+      $('reconcile').disabled = state.unknownOrders.length === 0;
+
+      const snapshot = state.snapshot;
+      const tables = snapshot?.tables || [];
+      $('tableCount').textContent = tables.length;
+      $('balance').textContent = snapshot?.balance ?? 0;
+      $('dailyStake').textContent = snapshot?.dailyStake ?? 0;
+      $('reservedStake').textContent = snapshot?.reservedStake ?? 0;
+      $('bundle').textContent = snapshot?.bundle || '-';
+      $('isolated').textContent = state.unknownOrders.length ? `状态不明订单 ${state.unknownOrders.length}` : '';
+      renderTables(tables);
+
+      unknownOrders = state.unknownOrders;
+      const log = $('logs');
+      const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 28;
+      log.textContent = state.logs.join('\n');
+      if (atBottom) log.scrollTop = log.scrollHeight;
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch('/api/state', {cache: 'no-store'});
+        if (!response.ok) throw new Error('控制服务不可用');
+        render(await response.json());
+      } catch (error) {
+        $('status').textContent = error.message;
+        $('statusDot').classList.remove('running');
+      }
+    }
+
+    function notify(message, error = false) {
+      const toast = $('toast');
+      toast.textContent = message;
+      toast.className = 'toast show' + (error ? ' error' : '');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.className = 'toast', 2600);
+    }
+
+    async function command(path, body, message) {
+      try {
+        await api(path, body);
+        notify(message);
+        await refresh();
+      } catch (error) {
+        notify(error.message, true);
+      }
+    }
+
+    $('save').onclick = () => command('/api/save', formSettings(), '设置已保存');
+    $('start').onclick = () => {
+      const settings = formSettings();
+      if (settings.mode === 'Live' && !confirm('真实模式会自动提交订单。确认按当前策略启动？')) return;
+      command('/api/start', settings, '监控正在启动');
+    };
+    $('stop').onclick = () => command('/api/stop', {}, '监控已停止');
+    $('toggleOrders').onclick = () => command('/api/toggle-orders', {}, '自动下单状态已更新');
+    $('resetStart').onclick = () => {
+      if (!confirm('将清空桌台、追注、未完成订单、当日累计金额和防重复状态。请确认网站没有仍在处理的订单。\n\n确认重置状态并启动？')) return;
+      command('/api/reset-start', formSettings(), '运行状态已重置，监控正在启动');
+    };
+    $('openData').onclick = () => command('/api/open-data', {}, '已打开数据目录');
+    $('quit').onclick = async () => {
+      if (!confirm('退出后将停止监控和自动下单。确认退出？')) return;
+      try { await api('/api/quit'); } catch {}
+      document.body.innerHTML = '<main><section class="toolbar"><h2>程序已退出</h2></section></main>';
+    };
+
+    function showOrder(index = 0) {
+      if (!unknownOrders.length) { notify('没有需要处理的状态不明订单'); return; }
+      currentOrder = unknownOrders[index];
+      const side = currentOrder.side === 'Banker' ? '庄' : '闲';
+      $('orderDetail').textContent = `桌台：${currentOrder.tableId}\n方向：${side}\n金额：${currentOrder.amount}\n档位：第 ${currentOrder.attempt} 档\n创建时间：${new Date(currentOrder.createdAt).toLocaleString()}\n订单键：${currentOrder.orderKey}`;
+      $('orderDialog').showModal();
+    }
+    $('reconcile').onclick = () => showOrder();
+    $('skipOrder').onclick = () => $('orderDialog').close();
+    document.querySelectorAll('[data-resolution]').forEach(button => button.onclick = async () => {
+      const order = currentOrder;
+      $('orderDialog').close();
+      await command('/api/reconcile', {orderKey: order.orderKey, resolution: button.dataset.resolution}, '订单对账完成');
+    });
+
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>

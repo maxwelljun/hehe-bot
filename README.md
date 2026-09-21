@@ -16,7 +16,7 @@
 
 针对 `www.yaxin868.com` 的接口分析、后台监控架构、六连判定和分阶段下单方案见 [`docs/yaxin-integration-plan.md`](docs/yaxin-integration-plan.md)。该方案默认采用只读监控和模拟下单，真实下单需在完成数据对照与幂等验证后单独启用。
 
-仓库同时包含独立的 Windows 程序 `YaxinMonitor`：通过 Chrome CDP 读取全部百家乐桌台，支持配置触发走势、连续次数、顺/反方向和 `1–10` 档金额序列；默认规则为“最新六连反向、10 → 20 → 40”。操作步骤见 [`docs/yaxin-user-guide.md`](docs/yaxin-user-guide.md)。
+仓库同时包含 Windows 和 macOS 版 `YaxinMonitor`：通过 Chrome CDP 读取全部百家乐桌台，支持配置触发走势、连续次数、顺/反方向和 `1–10` 档金额序列；默认规则为“最新六连反向、10 → 20 → 40”。Windows 操作步骤见 [`docs/yaxin-user-guide.md`](docs/yaxin-user-guide.md)，macOS 操作步骤见 [`docs/yaxin-mac-user-guide.md`](docs/yaxin-mac-user-guide.md)。
 
 ## 提醒规则
 
@@ -95,6 +95,13 @@ dotnet run --project tests/YaxinMonitor.Core.Tests -c Release
 dotnet build ScreenWatch.slnx -c Release
 dotnet publish src/ScreenWatch.Windows/ScreenWatch.Windows.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/publish/win-x64
 dotnet publish src/YaxinMonitor.Windows/YaxinMonitor.Windows.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/publish/yaxin-win-x64
+```
+
+在 macOS 构建 Apple Silicon 和 Intel 应用包：
+
+```text
+scripts/build-mac.sh osx-arm64
+scripts/build-mac.sh osx-x64
 ```
 
 交叉编译不能代替 Windows 桌面的运行验收。仓库包含 `.github/workflows/windows-build.yml`，推送到 GitHub 后可由 Windows runner 编译、运行核心测试并生成便携包；桌面交互仍需按清单实测。
