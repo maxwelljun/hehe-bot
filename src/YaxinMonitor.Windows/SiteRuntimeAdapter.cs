@@ -18,6 +18,10 @@ internal sealed record BridgeEvent
 
 internal sealed record BridgePoll
 {
+    public int BridgeVersion { get; init; }
+    public bool ObservationCompatible { get; init; }
+    public bool BettingCompatible { get; init; }
+    public string CompatibilityError { get; init; } = "";
     public bool Ready { get; init; }
     public bool LoggedIn { get; init; }
     public bool SocketConnected { get; init; }

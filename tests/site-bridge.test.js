@@ -63,7 +63,7 @@ async function main() {
   const info = await vm.runInNewContext(source, context, { filename: bridgePath });
   assert.deepEqual(JSON.parse(JSON.stringify(info)), {
     ok: true,
-    bridgeVersion: 2,
+    bridgeVersion: 3,
     sessionId: "test-session",
     bundle: "index.0e81c.js"
   });
@@ -72,6 +72,10 @@ async function main() {
   assert.equal(firstPoll.ready, true);
   assert.equal(firstPoll.loggedIn, true);
   assert.equal(firstPoll.socketConnected, true);
+  assert.equal(firstPoll.bridgeVersion, 3);
+  assert.equal(firstPoll.observationCompatible, true);
+  assert.equal(firstPoll.bettingCompatible, true);
+  assert.equal(firstPoll.compatibilityError, "");
   assert.equal(firstPoll.balance, 5000);
   assert.equal(firstPoll.tables.length, 1);
   assert.deepEqual(Array.from(firstPoll.tables[0].history), [1, 1, 1, 1, 1, 1]);
@@ -124,8 +128,24 @@ async function main() {
   assert.equal(disconnectedPoll.ready, false);
   assert.equal(disconnectedPoll.socketConnected, false);
 
+  const requestMethod = ctrl.reqBetMessage;
+  delete ctrl.reqBetMessage;
+  const incompatiblePoll = context.window.__YAXIN_MONITOR__.poll();
+  assert.equal(incompatiblePoll.observationCompatible, true);
+  assert.equal(incompatiblePoll.bettingCompatible, false);
+  assert.match(incompatiblePoll.compatibilityError, /缺少下注、限额或回执接口/);
+  ctrl.reqBetMessage = requestMethod;
+
+  const roadBean = ctrl.tableRoadBean;
+  delete ctrl.tableRoadBean;
+  const unreadablePoll = context.window.__YAXIN_MONITOR__.poll();
+  assert.equal(unreadablePoll.observationCompatible, false);
+  assert.equal(unreadablePoll.bettingCompatible, false);
+  assert.match(unreadablePoll.compatibilityError, /缺少局号、状态或路单接口/);
+  ctrl.tableRoadBean = roadBean;
+
   const secondInfo = await vm.runInNewContext(source, context, { filename: bridgePath });
-  assert.equal(secondInfo.bridgeVersion, 2);
+  assert.equal(secondInfo.bridgeVersion, 3);
   assert.equal(secondInfo.sessionId, "test-session");
   console.log("SiteBridge tests passed.");
 }

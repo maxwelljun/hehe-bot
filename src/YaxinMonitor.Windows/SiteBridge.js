@@ -92,18 +92,44 @@
     return true;
   }
 
-  function allTables() {
+  function allTableControllers() {
     const map = tableManager._tableDataCtrlMap || {};
-    return Object.keys(map).map(key => map[key]).filter(ctrl => ctrl && Number(ctrl.gameType) === 1)
-      .map(ctrl => { hookTable(ctrl); return tableSnapshot(ctrl); });
+    return Object.keys(map).map(key => map[key]).filter(ctrl => ctrl && Number(ctrl.gameType) === 1);
+  }
+
+  function inspectCompatibility(controllers) {
+    const observationIssues = [];
+    const bettingIssues = [];
+    for (const ctrl of controllers) {
+      const table = String(ctrl.tableId || "未知");
+      if (!ctrl.tableRoundInfoBean || !ctrl.tableStateInfo || !ctrl.tableRoadBean
+          || !ctrl.tableRoadBean.history || typeof ctrl.tableRoadBean.history[Symbol.iterator] !== "function")
+        observationIssues.push(`桌台 ${table} 缺少局号、状态或路单接口`);
+      const bean = ctrl.tableBetBean;
+      const limits = bean && bean.betZoneLimitData;
+      if (!bean || !bean.betZoneMap || !limits || !limits.PLAYER || !limits.BANKER
+          || typeof ctrl.reqBetMessage !== "function" || typeof ctrl.setBetResponseMsg !== "function")
+        bettingIssues.push(`桌台 ${table} 缺少下注、限额或回执接口`);
+    }
+    if (controllers.length === 0) observationIssues.push("没有百家乐桌台");
+    const observationCompatible = observationIssues.length === 0;
+    const bettingCompatible = observationCompatible && bettingIssues.length === 0;
+    return {
+      bridgeVersion: 3,
+      observationCompatible,
+      bettingCompatible,
+      compatibilityError: observationIssues.concat(bettingIssues).slice(0, 5).join("；")
+    };
   }
 
   const bridge = {
     info() {
-      return { ok: true, bridgeVersion: 2, sessionId, bundle: bundle.split("/").pop().split("?")[0] };
+      return { ok: true, bridgeVersion: 3, sessionId, bundle: bundle.split("/").pop().split("?")[0] };
     },
     poll() {
-      const tables = allTables();
+      const controllers = allTableControllers();
+      const compatibility = inspectCompatibility(controllers);
+      const tables = controllers.map(ctrl => { hookTable(ctrl); return tableSnapshot(ctrl); });
       const playerInfo = gameManager.PlayerInfo;
       const hasUserId = playerInfo && playerInfo.userId !== null && playerInfo.userId !== undefined
         && String(playerInfo.userId).length > 0;
@@ -113,6 +139,10 @@
         ready: loggedIn && tables.length > 0 && socketConnected,
         loggedIn,
         socketConnected,
+        bridgeVersion: compatibility.bridgeVersion,
+        observationCompatible: compatibility.observationCompatible,
+        bettingCompatible: compatibility.bettingCompatible,
+        compatibilityError: compatibility.compatibilityError,
         sessionId,
         bundle: bundle.split("/").pop().split("?")[0],
         balance: finite(playerInfo && playerInfo.sumAmount) || 0,

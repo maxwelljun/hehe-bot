@@ -13,7 +13,6 @@ public sealed record YaxinSettings
     public decimal MaxReservedStake { get; init; }
     public bool PlayAcceptedSound { get; init; } = true;
     public StrategySettings Strategy { get; init; } = new();
-    public string AllowedBundle { get; init; } = FrontendCompatibility.CurrentBundle;
 
     public void Validate()
     {
@@ -25,18 +24,5 @@ public sealed record YaxinSettings
             throw new ArgumentException("真实模式必须设置每日下注上限和同时在途金额上限。");
         if (Strategy is null) throw new ArgumentException("策略配置不能为空。");
         Strategy.Validate();
-        if (string.IsNullOrWhiteSpace(AllowedBundle) || AllowedBundle.Length > 100 || AllowedBundle.Any(ch => !(char.IsLetterOrDigit(ch) || ch is '.' or '-' or '_')))
-            throw new ArgumentException("前端版本标识无效。");
     }
-}
-
-public static class FrontendCompatibility
-{
-    public const string CurrentBundle = "index.fd7e6.js";
-    public const string PreviousBundle = "index.0e81c.js";
-
-    public static bool IsSupported(string bundle, string configuredBundle) =>
-        string.Equals(bundle, CurrentBundle, StringComparison.Ordinal)
-        || string.Equals(bundle, PreviousBundle, StringComparison.Ordinal)
-        || string.Equals(bundle, configuredBundle, StringComparison.Ordinal);
 }

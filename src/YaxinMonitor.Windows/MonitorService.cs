@@ -28,8 +28,10 @@ internal sealed class MonitorService : IAsyncDisposable
     private CancellationTokenSource? _cancellation;
     private Task? _worker;
     private volatile bool _ordersPaused = true;
+    private volatile bool _bettingCompatible;
     private long _nextSubmitTimestamp;
-    private string? _reportedUnsupportedBundle;
+    private string? _reportedBundle;
+    private string? _reportedCompatibilityIssue;
 
     public event Action<string>? LogReceived;
     public event Action<string>? StatusChanged;
@@ -100,6 +102,8 @@ internal sealed class MonitorService : IAsyncDisposable
             settings.Validate();
             if (_engine.State.Orders.Values.Any(order => order.Status == "Unknown"))
                 throw new InvalidOperationException("存在状态不明的订单，完成对账前不能恢复真实下注。");
+            if (!_bettingCompatible)
+                throw new InvalidOperationException("页面下注接口兼容检查尚未通过，不能恢复真实下注。");
         }
         _ordersPaused = false;
         WriteLog("已恢复新订单处理。");
@@ -120,6 +124,8 @@ internal sealed class MonitorService : IAsyncDisposable
         if (settings.Mode == MonitorMode.Live) _ordersPaused = true;
         _candidates.Clear();
         _quarantinedTables.Clear();
+        _bettingCompatible = false;
+        _reportedCompatibilityIssue = null;
         _cancellation = new CancellationTokenSource();
         _worker = RunAsync(chromeProfileDirectory, _cancellation.Token);
     }
@@ -170,22 +176,43 @@ internal sealed class MonitorService : IAsyncDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             BridgePoll poll = await adapter.PollAsync(cancellationToken).ConfigureAwait(false);
-            if (!FrontendCompatibility.IsSupported(poll.Bundle, settings.AllowedBundle))
-            {
-                if (!string.Equals(_reportedUnsupportedBundle, poll.Bundle, StringComparison.Ordinal))
-                {
-                    _reportedUnsupportedBundle = poll.Bundle;
-                    if (settings.Mode == MonitorMode.Live) PauseOrders("网站前端版本尚未验证");
-                    WriteLog($"网站前端版本为 {poll.Bundle}，当前程序尚未验证兼容性。自动下注已禁用，请升级程序。");
-                }
-                StatusChanged?.Invoke($"前端版本不兼容 · {poll.Bundle}");
-                PublishSnapshot(poll, settings);
-                await Task.Delay(1_000, cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-            _reportedUnsupportedBundle = null;
-
             HandleBridgeEvents(poll.Events, settings);
+
+            string? observationIssue = poll.BridgeVersion != 3
+                ? $"页面桥接协议版本为 {poll.BridgeVersion}，程序要求版本 3"
+                : !poll.ObservationCompatible ? "全桌读取接口不兼容：" + poll.CompatibilityError
+                : null;
+            string? bettingIssue = observationIssue is null && !poll.BettingCompatible
+                ? "下注接口不兼容：" + poll.CompatibilityError : null;
+            string? compatibilityIssue = observationIssue ?? bettingIssue;
+            _bettingCompatible = poll.BridgeVersion == 3 && poll.BettingCompatible;
+            if (compatibilityIssue is not null)
+            {
+                if (!string.Equals(_reportedCompatibilityIssue, compatibilityIssue, StringComparison.Ordinal))
+                {
+                    _reportedCompatibilityIssue = compatibilityIssue;
+                    if (settings.Mode == MonitorMode.Live) PauseOrders("页面接口兼容检查未通过");
+                    WriteLog(compatibilityIssue + "。自动下注已禁用，请升级程序。");
+                }
+                StatusChanged?.Invoke("页面接口不兼容 · 自动下注已禁用");
+                if (observationIssue is not null)
+                {
+                    PublishSnapshot(poll, settings);
+                    await Task.Delay(1_000, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+            }
+            else if (_reportedCompatibilityIssue is not null)
+            {
+                _reportedCompatibilityIssue = null;
+                WriteLog("页面运行时兼容检查已恢复正常；真实新订单仍保持暂停，请核对后手动恢复。");
+            }
+            if (!string.Equals(_reportedBundle, poll.Bundle, StringComparison.Ordinal))
+            {
+                _reportedBundle = poll.Bundle;
+                WriteLog($"网站前端 {poll.Bundle} 运行时兼容检查通过。");
+            }
+
             if (poll.Ready)
             {
                 foreach (TableSnapshot table in poll.Tables.OrderBy(table => table.TableId))
@@ -203,7 +230,8 @@ internal sealed class MonitorService : IAsyncDisposable
                 await DispatchOneAsync(adapter, poll, settings, cancellationToken).ConfigureAwait(false);
                 CheckAckTimeout(settings);
                 string isolated = _quarantinedTables.IsEmpty ? "" : $" · 已隔离 {_quarantinedTables.Count} 桌";
-                StatusChanged?.Invoke($"已连接 · {poll.Tables.Length} 桌{isolated}");
+                string compatibility = _bettingCompatible ? "" : " · 下注接口不兼容";
+                StatusChanged?.Invoke($"已连接 · {poll.Tables.Length} 桌{isolated}{compatibility}");
             }
             else
             {
