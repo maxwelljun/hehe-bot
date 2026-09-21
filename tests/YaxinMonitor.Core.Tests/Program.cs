@@ -143,6 +143,35 @@ var tests = new (string Name, Action Run)[]
         var changed = new StrategySettings { StreakLength = 4, Stakes = [10] };
         Throws<InvalidDataException>(() => new StrategyEngine(engine.State, changed));
     }),
+    ("Strategy change cannot discard an unknown order", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(bet, Now());
+        engine.MarkUnknown(bet.OrderKey, Now());
+        var changed = new StrategySettings { StreakLength = 4, Stakes = [10] };
+        Throws<InvalidDataException>(() => new StrategyEngine(engine.State, changed));
+    }),
+    ("Manual reconciliation allows a strategy change", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(bet, Now());
+        engine.MarkUnknown(bet.OrderKey, Now());
+        engine.ResolveUnknownOrder(bet.OrderKey, ManualOrderResolution.ConfirmedNotPlaced, Now().AddMinutes(1));
+        Equal("ManuallyConfirmedNotPlaced", engine.State.Orders[bet.OrderKey].Status);
+        True(engine.State.Tables[1].ActiveChase is null);
+        var changed = new StrategySettings { StreakLength = 4, Stakes = [10] };
+        _ = new StrategyEngine(engine.State, changed);
+    }),
+    ("Manual reconciliation rejects a known pending order", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        Throws<InvalidOperationException>(() => engine.ResolveUnknownOrder(
+            bet.OrderKey, ManualOrderResolution.ConfirmedSettled, Now().AddMinutes(1)));
+        Equal(ChaseStatus.AwaitingSettlement, engine.State.Tables[1].ActiveChase!.Status);
+    }),
     ("Custom strategy validation rejects unsafe values", () =>
     {
         Throws<ArgumentException>(() => new StrategySettings { StreakLength = 1 }.Validate());

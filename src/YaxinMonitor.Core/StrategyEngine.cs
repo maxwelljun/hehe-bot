@@ -155,6 +155,29 @@ public sealed class StrategyEngine
         chase.Status = ChaseStatus.Unknown;
     }
 
+    public void ResolveUnknownOrder(string orderKey, ManualOrderResolution resolution, DateTimeOffset now)
+    {
+        OrderState order = RequireOrder(orderKey);
+        if (order.Status != "Unknown")
+            throw new InvalidOperationException("只能人工处理状态不明的订单。");
+
+        order.Status = resolution switch
+        {
+            ManualOrderResolution.ConfirmedNotPlaced => "ManuallyConfirmedNotPlaced",
+            ManualOrderResolution.ConfirmedSettled => "ManuallyConfirmedSettled",
+            _ => throw new ArgumentOutOfRangeException(nameof(resolution))
+        };
+        order.UpdatedAt = now;
+
+        if (State.Tables.TryGetValue(order.TableId, out TableRuntimeState? table)
+            && table.ActiveChase is { Status: ChaseStatus.Unknown } chase
+            && chase.PendingOrderKey == order.OrderKey)
+        {
+            table.ActiveChase = null;
+            table.LastHistoryCount = 0;
+        }
+    }
+
     public decimal ReservedStake => State.Orders.Values
         .Where(order => order.Status is "Submitted" or "Accepted")
         .Sum(order => order.Amount);
@@ -270,10 +293,21 @@ public sealed class StrategyEngine
     private void ReconcileStrategyState()
     {
         bool HasDifferentStrategy(ChaseTaskState chase) => !string.Equals(chase.StrategyId, _strategy.Id, StringComparison.Ordinal);
-        if (State.Tables.Values.Select(table => table.ActiveChase).OfType<ChaseTaskState>()
-            .Any(chase => HasDifferentStrategy(chase)
-                && chase.Status is ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement or ChaseStatus.Unknown))
-            throw new InvalidDataException("存在由其他策略创建且尚未完成的订单，不能切换策略。");
+        TableRuntimeState? blockedTable = State.Tables.Values.FirstOrDefault(table => table.ActiveChase is { } chase
+            && HasDifferentStrategy(chase)
+            && chase.Status is ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement or ChaseStatus.Unknown);
+        if (blockedTable?.ActiveChase is { } blocked)
+        {
+            string orderKey = string.IsNullOrWhiteSpace(blocked.PendingOrderKey) ? "未知" : blocked.PendingOrderKey;
+            string detail = blocked.Status switch
+            {
+                ChaseStatus.AwaitingAcceptance => "正在等待网站确认，请等待确认完成后再切换策略",
+                ChaseStatus.AwaitingSettlement => "正在等待开奖结果，请等待结算完成后再切换策略",
+                ChaseStatus.Unknown => "状态不明，请停止监控，在网站订单记录中核对后点击“订单对账”",
+                _ => "尚未完成"
+            };
+            throw new InvalidDataException($"桌台 {blockedTable.TableId} 的订单{detail}。订单键：{orderKey}");
+        }
 
         foreach (TableRuntimeState table in State.Tables.Values)
         {

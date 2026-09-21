@@ -29,6 +29,12 @@ public enum ChaseStatus
     Unknown
 }
 
+public enum ManualOrderResolution
+{
+    ConfirmedNotPlaced,
+    ConfirmedSettled
+}
+
 public sealed record TableSnapshot
 {
     public long TableId { get; init; }

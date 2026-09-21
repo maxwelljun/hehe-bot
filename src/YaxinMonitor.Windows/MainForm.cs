@@ -17,9 +17,11 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _minimumSeconds = NumberBox(60);
     private readonly CheckBox _playSound = new() { Text = "下注及结算语音提醒", AutoSize = true };
     private readonly Button _start = new() { Text = "启动监控", AutoSize = true };
+    private readonly Button _forceStart = new() { Text = "强制启动", AutoSize = true };
     private readonly Button _stop = new() { Text = "停止", AutoSize = true, Enabled = false };
     private readonly Button _pause = new() { Text = "恢复新订单", AutoSize = true };
     private readonly Button _save = new() { Text = "保存设置", AutoSize = true };
+    private readonly Button _reconcile = new() { Text = "订单对账", AutoSize = true };
     private readonly Label _connection = new() { AutoSize = true, Text = "未连接", Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold) };
     private readonly Label _summary = new() { AutoSize = true, Text = "桌台 0 · 余额 0 · 今日 0 · 在途 0" };
     private readonly DataGridView _tables = new();
@@ -82,9 +84,11 @@ internal sealed class MainForm : Form
         Controls.Add(BuildLayout());
 
         _start.Click += StartClicked;
+        _forceStart.Click += ForceStartClicked;
         _stop.Click += StopClicked;
         _pause.Click += PauseClicked;
         _save.Click += SaveClicked;
+        _reconcile.Click += ReconcileClicked;
         FormClosing += OnFormClosing;
 
         var trayMenu = new ContextMenuStrip();
@@ -122,7 +126,7 @@ internal sealed class MainForm : Form
             LabelFor("每日上限"), _dailyLimit,
             LabelFor("在途上限"), _reservedLimit,
             LabelFor("安全余量(秒)"), _minimumSeconds,
-            _playSound, _save, _start, _stop, _pause
+            _playSound, _save, _reconcile, _start, _forceStart, _stop, _pause
         ]);
 
         var status = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(0, 4, 0, 8) };
@@ -174,14 +178,43 @@ internal sealed class MainForm : Form
             _service.UpdateSettings(settings);
             _store.SaveSettings(settings);
             _currentSettings = settings;
-            _service.Start(Path.Combine(_store.DirectoryPath, "chrome-profile"));
-            _start.Enabled = false;
-            _stop.Enabled = true;
-            SetSettingsEnabled(false);
-            AddLog("正在启动专用 Chrome 和监控服务...");
+            StartService("正在启动专用 Chrome 和监控服务...");
             await Task.CompletedTask;
         }
         catch (Exception exception) { ShowError(exception.Message); }
+    }
+
+    private async void ForceStartClicked(object? sender, EventArgs args)
+    {
+        try
+        {
+            YaxinSettings settings = ReadSettings(requireLiveConfirmation: false);
+            DialogResult result = MessageBox.Show(
+                "强制启动会清空上次保存的桌台、追注、未完成订单、当日累计金额和防重复状态，" +
+                "然后按网页最新数据重新判断。设置、日志和订单审计不会删除。\n\n" +
+                "如果网站仍有未完成订单，强制启动可能造成重复下注。请先核对网站订单记录。\n\n" +
+                $"模式：{ModeText(settings.Mode)}\n策略：{settings.Strategy.Summary}\n" +
+                $"每日上限：{settings.DailyStakeLimit:0.##}\n在途上限：{settings.MaxReservedStake:0.##}\n\n确认强制启动？",
+                "确认强制启动", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+            if (result != DialogResult.Yes) return;
+
+            _service.ResetRuntimeState(settings);
+            _store.SaveSettings(settings);
+            _currentSettings = settings;
+            StartService("正在强制启动专用 Chrome 和监控服务...");
+            await Task.CompletedTask;
+        }
+        catch (Exception exception) { ShowError(exception.Message); }
+    }
+
+    private void StartService(string message)
+    {
+        _service.Start(Path.Combine(_store.DirectoryPath, "chrome-profile"));
+        _start.Enabled = false;
+        _forceStart.Enabled = false;
+        _stop.Enabled = true;
+        SetSettingsEnabled(false);
+        AddLog(message);
     }
 
     private async void StopClicked(object? sender, EventArgs args)
@@ -189,6 +222,7 @@ internal sealed class MainForm : Form
         _stop.Enabled = false;
         await _service.StopAsync();
         _start.Enabled = true;
+        _forceStart.Enabled = true;
         SetSettingsEnabled(true);
     }
 
@@ -214,6 +248,69 @@ internal sealed class MainForm : Form
             AddLog("设置已保存。");
         }
         catch (Exception exception) { ShowError(exception.Message); }
+    }
+
+    private void ReconcileClicked(object? sender, EventArgs args)
+    {
+        try
+        {
+            IReadOnlyList<UnknownOrderView> orders = _service.GetUnknownOrders();
+            if (orders.Count == 0)
+            {
+                MessageBox.Show("没有需要人工对账的状态不明订单。", "订单对账",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            foreach (UnknownOrderView order in orders)
+            {
+                ManualOrderResolution? resolution = ShowReconciliationDialog(order, orders.Count);
+                if (resolution is null) break;
+                _service.ResolveUnknownOrder(order.OrderKey, resolution.Value);
+            }
+
+            int remaining = _service.GetUnknownOrders().Count;
+            if (remaining == 0)
+                MessageBox.Show("状态不明订单已全部处理，现在可以保存新策略。", "订单对账",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            else
+                AddLog($"仍有 {remaining} 笔状态不明订单未处理。");
+        }
+        catch (Exception exception) { ShowError(exception.Message); }
+    }
+
+    private static ManualOrderResolution? ShowReconciliationDialog(UnknownOrderView order, int total)
+    {
+        using var dialog = new Form
+        {
+            Text = "订单对账",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false,
+            ClientSize = new Size(620, 285),
+            Font = SystemFonts.MessageBoxFont
+        };
+        var text = new Label
+        {
+            AutoSize = false,
+            Location = new Point(18, 16),
+            Size = new Size(584, 190),
+            Text = $"请先在网站订单记录中核对这笔订单，再选择处理结果。当前共有 {total} 笔状态不明订单。\n\n" +
+                $"桌台：{order.TableId}\n方向：{SideText(order.Side)}\n金额：{order.Amount:0.##}\n档位：第 {order.Attempt} 档\n" +
+                $"创建时间：{order.CreatedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss}\n订单键：{order.OrderKey}\n\n" +
+                "订单仍在等待结算或无法确认时，请选择“暂不处理”。"
+        };
+        var notPlaced = new Button { Text = "确认未下注", AutoSize = true, Location = new Point(250, 230) };
+        var settled = new Button { Text = "确认已结算", AutoSize = true, Location = new Point(365, 230) };
+        var cancel = new Button { Text = "暂不处理", AutoSize = true, Location = new Point(490, 230), DialogResult = DialogResult.Cancel };
+        ManualOrderResolution? result = null;
+        notPlaced.Click += (_, _) => { result = ManualOrderResolution.ConfirmedNotPlaced; dialog.DialogResult = DialogResult.OK; };
+        settled.Click += (_, _) => { result = ManualOrderResolution.ConfirmedSettled; dialog.DialogResult = DialogResult.OK; };
+        dialog.Controls.AddRange([text, notPlaced, settled, cancel]);
+        dialog.CancelButton = cancel;
+        return dialog.ShowDialog() == DialogResult.OK ? result : null;
     }
 
     private YaxinSettings ReadSettings(bool requireLiveConfirmation)
@@ -293,6 +390,8 @@ internal sealed class MainForm : Form
         _minimumSeconds.Enabled = enabled;
         _playSound.Enabled = enabled;
         _save.Enabled = enabled;
+        _reconcile.Enabled = enabled;
+        _forceStart.Enabled = enabled;
     }
 
     private void PauseFromTray()
@@ -339,5 +438,13 @@ internal sealed class MainForm : Form
     private static Label LabelFor(string text) => new() { Text = text, AutoSize = true, Margin = new Padding(10, 7, 2, 0) };
     private static NumericUpDown NumberBox(decimal maximum) => new() { Minimum = 0, Maximum = maximum, DecimalPlaces = 0, Width = 90, ThousandsSeparator = true };
     private static decimal Clamp(decimal value, decimal maximum) => Math.Min(Math.Max(value, 0), maximum);
+    private static string SideText(BetSide side) => side == BetSide.Banker ? "庄" : "闲";
+    private static string ModeText(MonitorMode mode) => mode switch
+    {
+        MonitorMode.ReadOnly => "只读",
+        MonitorMode.Simulation => "模拟",
+        MonitorMode.Live => "真实",
+        _ => mode.ToString()
+    };
     private static void ShowError(string message) => MessageBox.Show(message, "亚信全桌监控", MessageBoxButtons.OK, MessageBoxIcon.Error);
 }

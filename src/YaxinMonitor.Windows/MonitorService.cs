@@ -13,6 +13,9 @@ internal sealed record ServiceSnapshot(
     decimal DailyStake, decimal ReservedStake, bool OrdersPaused,
     IReadOnlyList<TableViewState> Tables);
 
+internal sealed record UnknownOrderView(
+    string OrderKey, long TableId, BetSide Side, decimal Amount, int Attempt, DateTimeOffset CreatedAt);
+
 internal sealed class MonitorService : IAsyncDisposable
 {
     private readonly StateStore _store;
@@ -43,6 +46,23 @@ internal sealed class MonitorService : IAsyncDisposable
     public bool IsRunning => _worker is { IsCompleted: false };
     public bool OrdersPaused => _ordersPaused;
 
+    public IReadOnlyList<UnknownOrderView> GetUnknownOrders() => _engine.State.Orders.Values
+        .Where(order => order.Status == "Unknown")
+        .OrderBy(order => order.CreatedAt)
+        .Select(order => new UnknownOrderView(order.OrderKey, order.TableId, order.Side, order.Amount, order.Attempt, order.CreatedAt))
+        .ToArray();
+
+    public void ResolveUnknownOrder(string orderKey, ManualOrderResolution resolution)
+    {
+        if (IsRunning) throw new InvalidOperationException("请先停止监控再进行订单对账。");
+        _engine.ResolveUnknownOrder(orderKey, resolution, DateTimeOffset.Now);
+        _store.SaveState(_engine.State);
+        OrderState order = _engine.State.Orders[orderKey];
+        _store.AppendOrder(order);
+        string result = resolution == ManualOrderResolution.ConfirmedNotPlaced ? "人工确认未下注" : "人工确认已结算";
+        WriteLog($"订单对账完成：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，{result}。订单键：{order.OrderKey}");
+    }
+
     public void UpdateSettings(YaxinSettings settings)
     {
         if (IsRunning) throw new InvalidOperationException("请先停止监控再修改设置。");
@@ -51,6 +71,19 @@ internal sealed class MonitorService : IAsyncDisposable
         lock (_settingsLock) _settings = settings;
         _store.SaveState(_engine.State);
         if (settings.Mode == MonitorMode.Live) _ordersPaused = true;
+        WriteLog("当前策略：" + settings.Strategy.Summary + "。");
+    }
+
+    public void ResetRuntimeState(YaxinSettings settings)
+    {
+        if (IsRunning) throw new InvalidOperationException("请先停止监控再强制启动。");
+        settings.Validate();
+        _engine = new StrategyEngine(new EngineState(), settings.Strategy, settings.MinimumRemainingMilliseconds);
+        lock (_settingsLock) _settings = settings;
+        _candidates.Clear();
+        _ordersPaused = settings.Mode == MonitorMode.Live;
+        _store.SaveState(_engine.State);
+        WriteLog("已清空本地运行状态，将按网页最新全桌数据重新开始。");
         WriteLog("当前策略：" + settings.Strategy.Summary + "。");
     }
 
