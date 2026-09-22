@@ -187,7 +187,7 @@
     const token = '__CONTROL_TOKEN__';
     const ids = ['mode','triggerSide','streakLength','direction','stakes','dailyStakeLimit','maxReservedStake','minimumSeconds','playAcceptedSound'];
     let settingsLoaded = false;
-    let unknownOrders = [];
+    let reconciliationOrders = [];
     let currentOrder = null;
     let toastTimer;
 
@@ -265,7 +265,7 @@
       $('resetStart').disabled = state.running;
       $('toggleOrders').disabled = !state.running || state.settings.mode !== 'Live';
       $('toggleOrders').textContent = state.ordersPaused ? '恢复自动下单' : '暂停自动下单';
-      $('reconcile').disabled = state.unknownOrders.length === 0;
+      $('reconcile').disabled = state.reconciliationOrders.length === 0;
 
       const snapshot = state.snapshot;
       const tables = snapshot?.tables || [];
@@ -274,10 +274,10 @@
       $('dailyStake').textContent = snapshot?.dailyStake ?? 0;
       $('reservedStake').textContent = snapshot?.reservedStake ?? 0;
       $('bundle').textContent = snapshot?.bundle || '-';
-      $('isolated').textContent = state.unknownOrders.length ? `状态不明订单 ${state.unknownOrders.length}` : '';
+      $('isolated').textContent = state.reconciliationOrders.length ? `待对账订单 ${state.reconciliationOrders.length}` : '';
       renderTables(tables);
 
-      unknownOrders = state.unknownOrders;
+      reconciliationOrders = state.reconciliationOrders;
       const log = $('logs');
       const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 28;
       log.textContent = state.logs.join('\n');
@@ -333,10 +333,12 @@
     };
 
     function showOrder(index = 0) {
-      if (!unknownOrders.length) { notify('没有需要处理的状态不明订单'); return; }
-      currentOrder = unknownOrders[index];
+      if (!reconciliationOrders.length) { notify('没有需要处理的待对账订单'); return; }
+      currentOrder = reconciliationOrders[index];
       const side = currentOrder.side === 'Banker' ? '庄' : '闲';
-      $('orderDetail').textContent = `桌台：${currentOrder.tableId}\n方向：${side}\n金额：${currentOrder.amount}\n档位：第 ${currentOrder.attempt} 档\n创建时间：${new Date(currentOrder.createdAt).toLocaleString()}\n订单键：${currentOrder.orderKey}`;
+      const status = currentOrder.status === 'SettlementPending' ? '待外部结算' : '状态不明';
+      $('orderDetail').textContent = `状态：${status}\n桌台：${currentOrder.tableId}\n方向：${side}\n金额：${currentOrder.amount}\n档位：第 ${currentOrder.attempt} 档\n创建时间：${new Date(currentOrder.createdAt).toLocaleString()}\n订单键：${currentOrder.orderKey}`;
+      document.querySelector('[data-resolution="ConfirmedNotPlaced"]').disabled = currentOrder.status !== 'Unknown';
       $('orderDialog').showModal();
     }
     $('reconcile').onclick = () => showOrder();

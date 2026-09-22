@@ -173,7 +173,7 @@ internal sealed class ControlServer : IAsyncDisposable
                 ReconcileRequest request = await ReadJsonAsync<ReconcileRequest>(context.Request).ConfigureAwait(false);
                 if (!Enum.TryParse(request.Resolution, out ManualOrderResolution resolution))
                     throw new ArgumentException("对账结果无效。");
-                _service.ResolveUnknownOrder(request.OrderKey, resolution);
+                _service.ResolveOrder(request.OrderKey, resolution);
                 break;
             }
             case "/api/open-data":
@@ -209,7 +209,7 @@ internal sealed class ControlServer : IAsyncDisposable
         }
         return new
         {
-            version = "1.2.9",
+            version = "1.3.0",
             running = _service.IsRunning,
             ordersPaused = _service.OrdersPaused,
             status,
@@ -226,7 +226,7 @@ internal sealed class ControlServer : IAsyncDisposable
                 stakes = string.Join(",", _settings.Strategy.Stakes.Select(value => value.ToString("0.##")))
             },
             snapshot,
-            unknownOrders = _service.GetUnknownOrders(),
+            reconciliationOrders = _service.GetReconciliationOrders(),
             logs
         };
     }

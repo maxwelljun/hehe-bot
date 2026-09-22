@@ -40,16 +40,46 @@ public sealed class StateStore
         var state = JsonSerializer.Deserialize<EngineState>(stream, JsonOptions)
             ?? throw new InvalidDataException("状态文件为空。");
         if (state.Version != 1) throw new InvalidDataException("状态文件版本不受支持。");
-        if (state.Orders.Values.Any(order => order.Status is "Preparing" or "Submitted" or "Accepted"))
+        if (state.Orders.Values.Any(order => order.Status is "Preparing" or "Submitted" or "Accepted" or "SimulatedAccepted"))
         {
-            foreach (OrderState order in state.Orders.Values.Where(order => order.Status is "Preparing" or "Submitted" or "Accepted"))
+            foreach (OrderState order in state.Orders.Values.Where(order =>
+                         order.Status is "Preparing" or "Submitted" or "Accepted" or "SimulatedAccepted"))
             {
-                if (order.Status == "Accepted") order.CountedInDailyStake = true;
-                order.Status = "Unknown";
+                if (order.Status == "Accepted")
+                {
+                    order.CountedInDailyStake = true;
+                    order.Status = "SettlementPending";
+                }
+                else if (order.Status == "SimulatedAccepted")
+                {
+                    order.Status = "SimulationUnresolved";
+                }
+                else
+                {
+                    order.Status = "Unknown";
+                }
             }
-            foreach (TableRuntimeState table in state.Tables.Values)
-                if (table.ActiveChase is { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement } chase)
-                    chase.Status = ChaseStatus.Unknown;
+        }
+
+        foreach (OrderState order in state.Orders.Values.Where(order =>
+                     order.Status == "Unknown" && order.CountedInDailyStake))
+            order.Status = "SettlementPending";
+
+        foreach (TableRuntimeState table in state.Tables.Values)
+        {
+            if (table.ActiveChase is not { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement or ChaseStatus.Unknown } chase)
+                continue;
+            if (chase.PendingOrderKey is not null
+                && state.Orders.TryGetValue(chase.PendingOrderKey, out OrderState? order)
+                && order.Status is "SettlementPending" or "SimulationUnresolved")
+            {
+                table.ActiveChase = null;
+                table.LastHistoryCount = 0;
+            }
+            else if (chase.Status is ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement)
+            {
+                chase.Status = ChaseStatus.Unknown;
+            }
         }
         return state;
     }

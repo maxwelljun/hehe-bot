@@ -67,6 +67,7 @@ public abstract record EngineEvent(long TableId, string Message);
 public sealed record SignalEvent(long Id, string Text, string TaskKey) : EngineEvent(Id, Text);
 public sealed record BetRequestedEvent(long Id, string Text, BetCandidate Candidate) : EngineEvent(Id, Text);
 public sealed record SettlementEvent(long Id, string Text, string OrderKey, BaccaratOutcome Outcome) : EngineEvent(Id, Text);
+public sealed record SettlementDeferredEvent(long Id, string Text, string OrderKey) : EngineEvent(Id, Text);
 public sealed record ChaseCompletedEvent(long Id, string Text, string TaskKey, bool Won) : EngineEvent(Id, Text);
 
 public sealed class ChaseTaskState

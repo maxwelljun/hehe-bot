@@ -8,7 +8,7 @@ case "$runtime" in
 esac
 
 project_root="${0:A:h:h}"
-version="1.2.9"
+version="1.3.0"
 publish_dir="$project_root/artifacts/publish/yaxin-$runtime"
 bundle_name="YaxinMonitor-$version-$runtime"
 stage_dir="$project_root/artifacts/package/$bundle_name"

@@ -115,13 +115,33 @@ var tests = new (string Name, Action Run)[]
         snapshot = snapshot with { ShoeSeq = 2, GameSeq = 7, History = [2, 2, 2, 2, 2, 2] };
         Equal(BetSide.Banker, Candidate(engine.Observe(snapshot, Now().AddMinutes(1))).Side);
     }),
-    ("New shoe cannot discard an unsettled order", () =>
+    ("New shoe defers an accepted order and releases the table", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
-        SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        snapshot = snapshot with { ShoeSeq = 2, GameSeq = 1, State = "S", RemainingMilliseconds = 0, History = [] };
+        True(engine.Observe(snapshot, Now().AddMinutes(1)).OfType<SettlementDeferredEvent>().Any());
+        Equal("SettlementPending", engine.State.Orders[bet.OrderKey].Status);
+        Equal(bet.Amount, engine.ReservedStake);
+        True(engine.State.Tables[1].ActiveChase is null);
+    }),
+    ("New shoe may create a new order while old settlement is pending", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate old = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        snapshot = snapshot with { ShoeSeq = 2, GameSeq = 7, History = [2, 2, 2, 2, 2, 2] };
+        IReadOnlyList<EngineEvent> events = engine.Observe(snapshot, Now().AddMinutes(1));
+        Equal("SettlementPending", engine.State.Orders[old.OrderKey].Status);
+        Equal(BetSide.Banker, Candidate(events).Side);
+    }),
+    ("New shoe still blocks an order with unknown acceptance", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(bet, Now());
+        engine.MarkUnknown(bet.OrderKey, Now());
         snapshot = snapshot with { ShoeSeq = 2, GameSeq = 1, State = "S", RemainingMilliseconds = 0, History = [] };
         Throws<InvalidDataException>(() => engine.Observe(snapshot, Now().AddMinutes(1)));
-        Equal(ChaseStatus.AwaitingSettlement, engine.State.Tables[1].ActiveChase!.Status);
     }),
     ("Shuffle may clear history before shoe number changes", () =>
     {
@@ -182,7 +202,7 @@ var tests = new (string Name, Action Run)[]
         BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
         engine.MarkSubmitted(bet, Now());
         engine.MarkUnknown(bet.OrderKey, Now());
-        engine.ResolveUnknownOrder(bet.OrderKey, ManualOrderResolution.ConfirmedNotPlaced, Now().AddMinutes(1));
+        engine.ResolveOrder(bet.OrderKey, ManualOrderResolution.ConfirmedNotPlaced, Now().AddMinutes(1));
         Equal("ManuallyConfirmedNotPlaced", engine.State.Orders[bet.OrderKey].Status);
         True(engine.State.Tables[1].ActiveChase is null);
         var changed = new StrategySettings { StreakLength = 4, Stakes = [10] };
@@ -192,7 +212,7 @@ var tests = new (string Name, Action Run)[]
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
         BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
-        Throws<InvalidOperationException>(() => engine.ResolveUnknownOrder(
+        Throws<InvalidOperationException>(() => engine.ResolveOrder(
             bet.OrderKey, ManualOrderResolution.ConfirmedSettled, Now().AddMinutes(1)));
         Equal(ChaseStatus.AwaitingSettlement, engine.State.Tables[1].ActiveChase!.Status);
     }),
@@ -232,7 +252,7 @@ var tests = new (string Name, Action Run)[]
         Throws<ArgumentException>(() => new YaxinSettings { Mode = MonitorMode.Live }.Validate());
         new YaxinSettings { Mode = MonitorMode.Live, DailyStakeLimit = 100, MaxReservedStake = 70 }.Validate();
     }),
-    ("Persisted in-flight order becomes unknown", () => WithStore(store =>
+    ("Persisted accepted order becomes pending settlement and releases table", () => WithStore(store =>
     {
         var state = new EngineState();
         state.Tables[1] = new TableRuntimeState
@@ -248,11 +268,63 @@ var tests = new (string Name, Action Run)[]
         state.DailyAcceptedStake = 100;
         store.SaveState(state);
         EngineState loaded = store.LoadState();
-        Equal("Unknown", loaded.Orders["o"].Status);
+        Equal("SettlementPending", loaded.Orders["o"].Status);
         True(loaded.Orders["o"].CountedInDailyStake);
         Equal(0m, new StrategyEngine(loaded).UncertainStake);
+        Equal(100m, new StrategyEngine(loaded).ReservedStake);
+        True(loaded.Tables[1].ActiveChase is null);
+    })),
+    ("Persisted submitted order remains unknown and blocks table", () => WithStore(store =>
+    {
+        var state = new EngineState();
+        state.Tables[1] = new TableRuntimeState
+        {
+            TableId = 1, ShoeSeq = 1,
+            ActiveChase = new ChaseTaskState
+            {
+                TaskKey = "t", PendingOrderKey = "o", Status = ChaseStatus.AwaitingAcceptance,
+                StreakSide = BaccaratOutcome.Banker, BetSide = BetSide.Player
+            }
+        };
+        state.Orders["o"] = new OrderState { OrderKey = "o", TableId = 1, Amount = 100, Status = "Submitted" };
+        store.SaveState(state);
+        EngineState loaded = store.LoadState();
+        Equal("Unknown", loaded.Orders["o"].Status);
         Equal(ChaseStatus.Unknown, loaded.Tables[1].ActiveChase!.Status);
-    }))
+    })),
+    ("Legacy counted unknown order migrates to pending settlement", () => WithStore(store =>
+    {
+        var state = new EngineState();
+        state.Tables[1] = new TableRuntimeState
+        {
+            TableId = 1, ShoeSeq = 1,
+            ActiveChase = new ChaseTaskState
+            {
+                TaskKey = "t", PendingOrderKey = "o", Status = ChaseStatus.Unknown,
+                StreakSide = BaccaratOutcome.Banker, BetSide = BetSide.Player
+            }
+        };
+        state.Orders["o"] = new OrderState
+        {
+            OrderKey = "o", TableId = 1, Amount = 100, Status = "Unknown", CountedInDailyStake = true
+        };
+        store.SaveState(state);
+        EngineState loaded = store.LoadState();
+        Equal("SettlementPending", loaded.Orders["o"].Status);
+        True(loaded.Tables[1].ActiveChase is null);
+    })),
+    ("Manual settlement reconciliation releases reserved stake", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        snapshot = snapshot with { ShoeSeq = 2, GameSeq = 1, State = "S", RemainingMilliseconds = 0, History = [] };
+        engine.Observe(snapshot, Now().AddMinutes(1));
+        Throws<InvalidOperationException>(() => engine.ResolveOrder(
+            bet.OrderKey, ManualOrderResolution.ConfirmedNotPlaced, Now().AddMinutes(2)));
+        engine.ResolveOrder(bet.OrderKey, ManualOrderResolution.ConfirmedSettled, Now().AddMinutes(2));
+        Equal("ManuallyConfirmedSettled", engine.State.Orders[bet.OrderKey].Status);
+        Equal(0m, engine.ReservedStake);
+    })
 };
 
 int failures = 0;

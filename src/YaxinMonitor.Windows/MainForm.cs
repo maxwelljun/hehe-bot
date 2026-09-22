@@ -274,32 +274,32 @@ internal sealed class MainForm : Form
     {
         try
         {
-            IReadOnlyList<UnknownOrderView> orders = _service.GetUnknownOrders();
+            IReadOnlyList<ReconciliationOrderView> orders = _service.GetReconciliationOrders();
             if (orders.Count == 0)
             {
-                MessageBox.Show("没有需要人工对账的状态不明订单。", "订单对账",
+                MessageBox.Show("没有需要人工对账的订单。", "订单对账",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
-            foreach (UnknownOrderView order in orders)
+            foreach (ReconciliationOrderView order in orders)
             {
                 ManualOrderResolution? resolution = ShowReconciliationDialog(order, orders.Count);
                 if (resolution is null) break;
-                _service.ResolveUnknownOrder(order.OrderKey, resolution.Value);
+                _service.ResolveOrder(order.OrderKey, resolution.Value);
             }
 
-            int remaining = _service.GetUnknownOrders().Count;
+            int remaining = _service.GetReconciliationOrders().Count;
             if (remaining == 0)
-                MessageBox.Show("状态不明订单已全部处理，对应桌台已恢复监控和新订单处理。", "订单对账",
+                MessageBox.Show("待对账订单已全部处理。", "订单对账",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             else
-                AddLog($"仍有 {remaining} 笔状态不明订单未处理。");
+                AddLog($"仍有 {remaining} 笔订单待对账。");
         }
         catch (Exception exception) { ShowError(exception.Message); }
     }
 
-    private static ManualOrderResolution? ShowReconciliationDialog(UnknownOrderView order, int total)
+    private static ManualOrderResolution? ShowReconciliationDialog(ReconciliationOrderView order, int total)
     {
         using var dialog = new Form
         {
@@ -317,12 +317,17 @@ internal sealed class MainForm : Form
             AutoSize = false,
             Location = new Point(18, 16),
             Size = new Size(584, 190),
-            Text = $"请先在网站订单记录中核对这笔订单，再选择处理结果。当前共有 {total} 笔状态不明订单。\n\n" +
+            Text = $"请先在网站订单记录中核对这笔订单，再选择处理结果。当前共有 {total} 笔待对账订单。\n\n" +
+                $"状态：{(order.Status == "SettlementPending" ? "待外部结算" : "状态不明")}\n" +
                 $"桌台：{order.TableId}\n方向：{SideText(order.Side)}\n金额：{order.Amount:0.##}\n档位：第 {order.Attempt} 档\n" +
                 $"创建时间：{order.CreatedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss}\n订单键：{order.OrderKey}\n\n" +
                 "订单仍在等待结算或无法确认时，请选择“暂不处理”。"
         };
-        var notPlaced = new Button { Text = "确认未下注", AutoSize = true, Location = new Point(250, 230) };
+        var notPlaced = new Button
+        {
+            Text = "确认未下注", AutoSize = true, Location = new Point(250, 230),
+            Enabled = order.Status == "Unknown"
+        };
         var settled = new Button { Text = "确认已结算", AutoSize = true, Location = new Point(365, 230) };
         var cancel = new Button { Text = "暂不处理", AutoSize = true, Location = new Point(490, 230), DialogResult = DialogResult.Cancel };
         ManualOrderResolution? result = null;

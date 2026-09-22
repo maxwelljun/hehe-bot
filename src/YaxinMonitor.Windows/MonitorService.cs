@@ -13,8 +13,8 @@ internal sealed record ServiceSnapshot(
     decimal DailyStake, decimal ReservedStake, bool OrdersPaused,
     IReadOnlyList<TableViewState> Tables);
 
-internal sealed record UnknownOrderView(
-    string OrderKey, long TableId, BetSide Side, decimal Amount, int Attempt, DateTimeOffset CreatedAt);
+internal sealed record ReconciliationOrderView(
+    string OrderKey, long TableId, BetSide Side, decimal Amount, int Attempt, DateTimeOffset CreatedAt, string Status);
 
 internal sealed class MonitorService : IAsyncDisposable
 {
@@ -51,33 +51,34 @@ internal sealed class MonitorService : IAsyncDisposable
     public bool IsRunning => _worker is { IsCompleted: false };
     public bool OrdersPaused => _ordersPaused;
 
-    public IReadOnlyList<UnknownOrderView> GetUnknownOrders()
+    public IReadOnlyList<ReconciliationOrderView> GetReconciliationOrders()
     {
         lock (_engineLock)
             return _engine.State.Orders.Values
-                .Where(order => order.Status == "Unknown")
+                .Where(order => order.Status is "Unknown" or "SettlementPending")
                 .OrderBy(order => order.CreatedAt)
-                .Select(order => new UnknownOrderView(order.OrderKey, order.TableId, order.Side, order.Amount, order.Attempt, order.CreatedAt))
+                .Select(order => new ReconciliationOrderView(order.OrderKey, order.TableId, order.Side,
+                    order.Amount, order.Attempt, order.CreatedAt, order.Status))
                 .ToArray();
     }
 
-    public void ResolveUnknownOrder(string orderKey, ManualOrderResolution resolution)
+    public void ResolveOrder(string orderKey, ManualOrderResolution resolution)
     {
         OrderState order;
         bool tableCanResume;
         lock (_engineLock)
         {
-            _engine.ResolveUnknownOrder(orderKey, resolution, DateTimeOffset.Now);
+            _engine.ResolveOrder(orderKey, resolution, DateTimeOffset.Now);
             order = _engine.State.Orders[orderKey];
             tableCanResume = !_engine.State.Orders.Values.Any(candidate =>
                 candidate.TableId == order.TableId && candidate.Status == "Unknown");
             _store.SaveState(_engine.State);
             _store.AppendOrder(order);
         }
-        if (tableCanResume) _quarantinedTables.TryRemove(order.TableId, out _);
+        bool tableResumed = tableCanResume && _quarantinedTables.TryRemove(order.TableId, out _);
         string result = resolution == ManualOrderResolution.ConfirmedNotPlaced ? "人工确认未下注" : "人工确认已结算";
         WriteLog($"订单对账完成：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，{result}。订单键：{order.OrderKey}");
-        if (tableCanResume) WriteLog($"桌台 {order.TableId} 已解除隔离，继续监控和处理新订单。");
+        if (tableResumed) WriteLog($"桌台 {order.TableId} 已解除隔离，继续监控和处理新订单。");
     }
 
     public void UpdateSettings(YaxinSettings settings)
@@ -282,7 +283,7 @@ internal sealed class MonitorService : IAsyncDisposable
                     _store.SaveState(_engine.State);
                     _store.AppendOrder(order);
                     WriteLog($"下注已受理：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，第 {order.Attempt} 档。");
-                    if (lateConfirmation) WriteLog($"桌台 {order.TableId} 的迟到确认已恢复订单状态；自动下单仍保持暂停，请核对后手动恢复。");
+                    if (lateConfirmation) WriteLog($"桌台 {order.TableId} 的迟到确认已恢复为等待结算状态。");
                     if (settings.PlayAcceptedSound) _notifier.NotifyAccepted(order);
                 }
                 else
@@ -332,6 +333,9 @@ internal sealed class MonitorService : IAsyncDisposable
                 if (settings.PlayAcceptedSound && !order.IsSimulation && settled.Outcome != BaccaratOutcome.Tie)
                     _notifier.NotifySettlement(order, settled.Outcome == FixedStrategy.ToOutcome(order.Side));
             }
+            if (item is SettlementDeferredEvent deferred
+                && _engine.State.Orders.TryGetValue(deferred.OrderKey, out OrderState? deferredOrder))
+                _store.AppendOrder(deferredOrder);
         }
         if (changed) _store.SaveState(_engine.State);
     }

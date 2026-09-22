@@ -44,7 +44,7 @@ try {
         -o $yaxinPublishDir --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Yaxin monitor publish failed.' }
 
-    $yaxinBundleName = "YaxinMonitor-1.2.9-$Runtime"
+    $yaxinBundleName = "YaxinMonitor-1.3.0-$Runtime"
     $yaxinStagingDir = Join-Path $projectRoot "artifacts/package/$yaxinBundleName"
     if (Test-Path $yaxinStagingDir) { Remove-Item -Recurse -Force $yaxinStagingDir }
     New-Item -ItemType Directory -Path $yaxinStagingDir -Force | Out-Null

@@ -29,7 +29,9 @@ public sealed class StrategyEngine
 
         if (table.ShoeSeq != snapshot.ShoeSeq)
         {
-            if (table.ActiveChase is { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement or ChaseStatus.Unknown })
+            if (table.ActiveChase is { Status: ChaseStatus.AwaitingSettlement })
+                DeferSettlement(table, now, events, "切换牌靴前未观察到开奖结果");
+            if (table.ActiveChase is { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.Unknown })
                 throw new InvalidDataException($"桌台 {snapshot.TableId} 在订单尚未完成时切换牌靴。请核对订单和结算记录。");
             table.ShoeSeq = snapshot.ShoeSeq;
             table.LastHistoryCount = 0;
@@ -38,7 +40,9 @@ public sealed class StrategyEngine
         }
         else if (snapshot.History.Length < table.LastHistoryCount)
         {
-            if (snapshot.State is "S" or "RP" && table.ActiveChase is not { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.AwaitingSettlement or ChaseStatus.Unknown })
+            if (snapshot.State is "S" or "RP" && table.ActiveChase is { Status: ChaseStatus.AwaitingSettlement })
+                DeferSettlement(table, now, events, "洗牌前未观察到开奖结果");
+            if (snapshot.State is "S" or "RP" && table.ActiveChase is not { Status: ChaseStatus.AwaitingAcceptance or ChaseStatus.Unknown })
             {
                 table.LastHistoryCount = 0;
                 table.LockedTaskKeys.Clear();
@@ -156,11 +160,15 @@ public sealed class StrategyEngine
         chase.Status = ChaseStatus.Unknown;
     }
 
-    public void ResolveUnknownOrder(string orderKey, ManualOrderResolution resolution, DateTimeOffset now)
+    public void ResolveOrder(string orderKey, ManualOrderResolution resolution, DateTimeOffset now)
     {
         OrderState order = RequireOrder(orderKey);
-        if (order.Status != "Unknown")
-            throw new InvalidOperationException("只能人工处理状态不明的订单。");
+        bool isUnknown = order.Status == "Unknown";
+        bool isDeferredSettlement = order.Status == "SettlementPending";
+        if (!isUnknown && !isDeferredSettlement)
+            throw new InvalidOperationException("只能人工处理状态不明或待外部结算的订单。");
+        if (isDeferredSettlement && resolution != ManualOrderResolution.ConfirmedSettled)
+            throw new InvalidOperationException("已受理订单只能确认已结算。");
 
         order.Status = resolution switch
         {
@@ -180,7 +188,7 @@ public sealed class StrategyEngine
     }
 
     public decimal ReservedStake => State.Orders.Values
-        .Where(order => order.Status is "Submitted" or "Accepted" or "Unknown")
+        .Where(order => order.Status is "Submitted" or "Accepted" or "Unknown" or "SettlementPending")
         .Sum(order => order.Amount);
 
     public decimal UncertainStake => State.Orders.Values
@@ -229,6 +237,22 @@ public sealed class StrategyEngine
         {
             ClearPending(chase);
         }
+    }
+
+    private void DeferSettlement(TableRuntimeState table, DateTimeOffset now, List<EngineEvent> events, string reason)
+    {
+        ChaseTaskState chase = table.ActiveChase
+            ?? throw new InvalidOperationException("找不到待结算追注任务。");
+        if (chase.PendingOrderKey is null) throw new InvalidOperationException("待结算订单键为空。");
+        OrderState order = RequireOrder(chase.PendingOrderKey);
+        order.Status = order.IsSimulation ? "SimulationUnresolved" : "SettlementPending";
+        order.UpdatedAt = now;
+        table.ActiveChase = null;
+        events.Add(new SettlementDeferredEvent(table.TableId,
+            order.IsSimulation
+                ? $"桌台 {table.TableId} 的模拟订单{reason}，已结束该追注任务。"
+                : $"桌台 {table.TableId} 的已受理订单{reason}，已挂起等待外部结算；该桌继续处理新订单。",
+            order.OrderKey));
     }
 
     private static void ClearPending(ChaseTaskState chase)
