@@ -56,26 +56,31 @@ public sealed class StrategyEngine
 
         SettlePending(table, snapshot, now, events);
 
-        LatestRun run = LatestRun.From(snapshot.History);
+        IReadOnlyList<ResultRun> runs = PatternDetector.RecentRuns(snapshot.History);
         bool newestResultIsDecisive = snapshot.History.Length > 0
             && LatestRun.Normalize(snapshot.History[^1]) is BaccaratOutcome.Banker or BaccaratOutcome.Player;
         bool sawNewHistory = snapshot.History.Length > table.LastHistoryCount;
 
-        if (table.ActiveChase is null && newestResultIsDecisive && run.Count == _strategy.StreakLength && _strategy.Matches(run.Side)
+        if (newestResultIsDecisive && runs.Count > 0 && _strategy.Matches(runs[0].Side)
             && (sawNewHistory || table.LastHistoryCount == 0))
         {
-            string taskKey = BuildTaskKey(snapshot, run);
-            if (table.LockedTaskKeys.Add(taskKey))
+            BaccaratOutcome lastSide = runs[0].Side;
+            foreach (StrategyPattern pattern in _strategy.OrderedPatterns)
             {
+                if (PatternDetector.Match(runs, pattern, _strategy.StreakLength) is not { } anchor) continue;
+                string taskKey = BuildTaskKey(snapshot, pattern, anchor);
+                // One chase per table: a pattern seen while the table is busy is consumed, never queued.
+                if (!table.LockedTaskKeys.Add(taskKey) || table.ActiveChase is not null) continue;
                 table.ActiveChase = new ChaseTaskState
                 {
                     TaskKey = taskKey,
                     StrategyId = _strategy.Id,
-                    StreakSide = run.Side,
-                    BetSide = _strategy.SelectBetSide(run.Side)
+                    Pattern = pattern,
+                    StreakSide = lastSide,
+                    BetSide = _strategy.SelectBetSide(lastSide)
                 };
                 events.Add(new SignalEvent(snapshot.TableId,
-                    $"{snapshot.TableName} 最新形成 {run.Count} 连{SideText(run.Side)}，准备买{SideText(table.ActiveChase.BetSide)}。", taskKey));
+                    $"{snapshot.TableName} 最新形成{_strategy.PatternText(pattern)}（末口{SideText(lastSide)}），准备买{SideText(table.ActiveChase.BetSide)}。", taskKey));
             }
         }
 
@@ -301,9 +306,14 @@ public sealed class StrategyEngine
         State.DailyAcceptedStake = 0;
     }
 
-    private string BuildTaskKey(TableSnapshot snapshot, LatestRun run) => string.Join(':',
-        _strategy.Id, snapshot.TableId.ToString(CultureInfo.InvariantCulture), snapshot.ShoeSeq.ToString(CultureInfo.InvariantCulture),
-        ((int)run.Side).ToString(CultureInfo.InvariantCulture), run.StartIndex.ToString(CultureInfo.InvariantCulture));
+    // Streak keys keep the original format so locks saved before alternation modes existed stay valid.
+    private string BuildTaskKey(TableSnapshot snapshot, StrategyPattern pattern, ResultRun anchor)
+    {
+        string key = string.Join(':',
+            _strategy.Id, snapshot.TableId.ToString(CultureInfo.InvariantCulture), snapshot.ShoeSeq.ToString(CultureInfo.InvariantCulture),
+            ((int)anchor.Side).ToString(CultureInfo.InvariantCulture), anchor.StartIndex.ToString(CultureInfo.InvariantCulture));
+        return pattern == StrategyPattern.Streak ? key : key + ":" + pattern;
+    }
 
     private static string BuildOrderKey(TableSnapshot snapshot, ChaseTaskState chase) => string.Join(':', chase.TaskKey,
         snapshot.GameSeq.ToString(CultureInfo.InvariantCulture), ((int)chase.BetSide).ToString(CultureInfo.InvariantCulture),
@@ -345,6 +355,7 @@ public sealed class StrategyEngine
             if (!HasDifferentStrategy(chase))
             {
                 if (chase.AttemptIndex < 0 || chase.AttemptIndex >= _strategy.Stakes.Length
+                    || !_strategy.Patterns.Contains(chase.Pattern)
                     || chase.BetSide != _strategy.SelectBetSide(chase.StreakSide))
                     throw new InvalidDataException("保存的追注任务与当前策略不一致。");
                 continue;

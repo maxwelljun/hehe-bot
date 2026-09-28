@@ -74,6 +74,7 @@ public sealed class ChaseTaskState
 {
     public string TaskKey { get; set; } = "";
     public string StrategyId { get; set; } = FixedStrategy.Id;
+    public StrategyPattern Pattern { get; set; } = StrategyPattern.Streak;
     public BaccaratOutcome StreakSide { get; set; }
     public BetSide BetSide { get; set; }
     public int AttemptIndex { get; set; }

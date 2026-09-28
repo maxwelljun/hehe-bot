@@ -324,7 +324,108 @@ var tests = new (string Name, Action Run)[]
         engine.ResolveOrder(bet.OrderKey, ManualOrderResolution.ConfirmedSettled, Now().AddMinutes(2));
         Equal("ManuallyConfirmedSettled", engine.State.Orders[bet.OrderKey].Status);
         Equal(0m, engine.ReservedStake);
-    })
+    }),
+    ("Alternation patterns bet opposite of the last result", () =>
+    {
+        foreach (var (pattern, history, side) in new (StrategyPattern, int[], BetSide)[]
+        {
+            (StrategyPattern.SingleAlternation, [1, 2, 1, 2, 1, 2], BetSide.Banker),
+            (StrategyPattern.DoubleAlternation, [1, 1, 2, 2, 1, 1], BetSide.Player),
+            (StrategyPattern.TripleAlternation, [1, 1, 1, 2, 2, 2, 1, 1, 1], BetSide.Player),
+            (StrategyPattern.SingleAlternation, [2, 1, 2, 1, 2, 1], BetSide.Player),
+            (StrategyPattern.DoubleAlternation, [2, 2, 1, 1, 2, 2], BetSide.Banker),
+            (StrategyPattern.TripleAlternation, [2, 2, 2, 1, 1, 1, 2, 2, 2], BetSide.Banker)
+        })
+        {
+            var (engine, snapshot) = Ready(history, Patterns(pattern));
+            BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+            Equal(side, bet.Side); Equal(10m, bet.Amount);
+            Equal(pattern, engine.State.Tables[1].ActiveChase!.Pattern);
+            var (shorter, shortSnapshot) = Ready(history[..^1], Patterns(pattern));
+            False(shorter.Observe(shortSnapshot, Now()).OfType<BetRequestedEvent>().Any());
+        }
+    }),
+    ("Alternation runs must match exactly", () =>
+    {
+        foreach (var (pattern, history) in new (StrategyPattern, int[])[]
+        {
+            (StrategyPattern.DoubleAlternation, [1, 1, 1, 2, 2, 1, 1]),
+            (StrategyPattern.DoubleAlternation, [1, 1, 2, 2, 1, 1, 1]),
+            (StrategyPattern.TripleAlternation, [1, 1, 2, 2, 2, 1, 1, 1]),
+            (StrategyPattern.SingleAlternation, [1, 1, 2, 1, 2, 1]),
+            (StrategyPattern.Streak, [1, 2, 1, 2, 1, 2])
+        })
+        {
+            var (engine, snapshot) = Ready(history, Patterns(pattern));
+            False(engine.Observe(snapshot, Now()).OfType<BetRequestedEvent>().Any());
+        }
+    }),
+    ("Ties are ignored inside alternation", () =>
+    {
+        var (engine, snapshot) = Ready([1, 3, 2, 1, 3, 3, 2, 1, 2], Patterns(StrategyPattern.SingleAlternation));
+        Equal(BetSide.Banker, Candidate(engine.Observe(snapshot, Now())).Side);
+    }),
+    ("Alternation loss advances stakes on the same side", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 2, 2, 1, 1], Patterns(StrategyPattern.DoubleAlternation));
+        SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 1] };
+        BetCandidate second = Candidate(engine.Observe(snapshot, Now().AddMinutes(1)));
+        Equal(BetSide.Player, second.Side); Equal(20m, second.Amount); Equal(2, second.Attempt);
+    }),
+    ("Extended alternation triggers only once", () =>
+    {
+        var (engine, snapshot) = Ready([1, 2, 1, 2, 1, 2], Patterns(StrategyPattern.SingleAlternation));
+        SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 1] };
+        var events = engine.Observe(snapshot, Now().AddMinutes(1));
+        True(events.OfType<ChaseCompletedEvent>().Single().Won);
+        False(events.OfType<SignalEvent>().Any());
+        snapshot = snapshot with { GameSeq = 9, History = [.. snapshot.History, 2] };
+        False(engine.Observe(snapshot, Now().AddMinutes(2)).OfType<SignalEvent>().Any());
+    }),
+    ("Multiple patterns share one chase per table", () =>
+    {
+        var strategy = new StrategySettings
+        {
+            StreakLength = 2,
+            Patterns = [StrategyPattern.DoubleAlternation, StrategyPattern.Streak]
+        };
+        var (engine, snapshot) = Ready([1, 1, 2, 2, 1, 1], strategy);
+        var events = engine.Observe(snapshot, Now());
+        Equal(1, events.OfType<SignalEvent>().Count());
+        Equal(BetSide.Player, Candidate(events).Side);
+        Equal(StrategyPattern.Streak, engine.State.Tables[1].ActiveChase!.Pattern);
+    }),
+    ("Pattern seen during an active chase is consumed", () =>
+    {
+        var strategy = Patterns(StrategyPattern.Streak, StrategyPattern.SingleAlternation);
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1], strategy);
+        snapshot = snapshot with { State = "D" };
+        engine.Observe(snapshot, Now());
+        snapshot = snapshot with { History = [.. snapshot.History, 2, 1, 2, 1, 2, 1] };
+        False(engine.Observe(snapshot, Now()).OfType<SignalEvent>().Any());
+        Equal(StrategyPattern.Streak, engine.State.Tables[1].ActiveChase!.Pattern);
+        engine.State.Tables[1].ActiveChase = null;
+        engine.State.Tables[1].LastHistoryCount = 0;
+        False(engine.Observe(snapshot with { State = "A" }, Now()).OfType<SignalEvent>().Any());
+    }),
+    ("Pattern selection changes strategy id and validates", () =>
+    {
+        Equal(FixedStrategy.Id, new StrategySettings().Id);
+        Equal("custom-v1-6-0-0-10_20_40-p0_2", Patterns(StrategyPattern.DoubleAlternation, StrategyPattern.Streak).Id);
+        Throws<ArgumentException>(() => Patterns().Validate());
+        Throws<ArgumentException>(() => Patterns(StrategyPattern.Streak, StrategyPattern.Streak).Validate());
+    }),
+    ("Legacy settings without patterns default to streak", () => WithStore(store =>
+    {
+        Directory.CreateDirectory(store.DirectoryPath);
+        File.WriteAllText(store.SettingsPath, "{\"Version\":1,\"Strategy\":{\"StreakLength\":6}}");
+        StrategySettings loaded = store.LoadSettings().Strategy;
+        True(loaded.Patterns is [StrategyPattern.Streak]);
+        store.SaveSettings(new YaxinSettings { Strategy = Patterns(StrategyPattern.TripleAlternation) });
+        True(store.LoadSettings().Strategy.Patterns is [StrategyPattern.TripleAlternation]);
+    }))
 };
 
 int failures = 0;
@@ -348,6 +449,8 @@ static (StrategyEngine Engine, TableSnapshot Snapshot) Ready(int[] history, Stra
         PlayerMin = 10, PlayerMax = 10_000, BankerMin = 10, BankerMax = 10_000
     });
 }
+
+static StrategySettings Patterns(params StrategyPattern[] patterns) => new() { Patterns = patterns };
 
 static BetCandidate Candidate(IReadOnlyList<EngineEvent> events) => events.OfType<BetRequestedEvent>().Single().Candidate;
 

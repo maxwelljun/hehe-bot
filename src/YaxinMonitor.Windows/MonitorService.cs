@@ -465,7 +465,7 @@ internal sealed class MonitorService : IAsyncDisposable
                 LatestRun run = LatestRun.From(table.History);
                 _engine.State.Tables.TryGetValue(table.TableId, out TableRuntimeState? runtime);
                 string chase = runtime?.ActiveChase is { } active
-                    ? $"第 {active.AttemptIndex + 1} 档 / {active.Status}" : "-";
+                    ? $"{settings.Strategy.PatternText(active.Pattern)} · 第 {active.AttemptIndex + 1} 档 / {active.Status}" : "-";
                 string latest = run.Count == 0 ? "-" : $"{OutcomeText(run.Side)} × {run.Count}";
                 return new TableViewState(table.TableId, table.TableName, table.State, table.ShoeSeq, table.GameSeq,
                     latest, run.Count, chase, table.RemainingMilliseconds / 1000);

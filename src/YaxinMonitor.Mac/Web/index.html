@@ -71,6 +71,8 @@
     input:disabled, select:disabled { color: #8b959b; background: #eef1f2; }
     .check { display: flex; align-items: center; gap: 7px; height: 34px; color: var(--text); font-size: 13px; }
     .check input { width: 16px; height: 16px; margin: 0; }
+    .patterns { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; color: var(--muted); font-size: 12px; }
+    .patterns .check { height: 26px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line); }
     button { padding: 0 13px; cursor: pointer; background: #fff; }
     button:hover:not(:disabled) { border-color: #7f8c94; background: #f5f7f8; }
@@ -122,6 +124,12 @@
   <main>
     <section class="toolbar">
       <div class="settings" id="settings">
+        <div class="patterns" id="patterns">识别模式（可多选）
+          <label class="check" title="最新连续同色达到“连续次数”，如庄庄庄庄庄庄"><input type="checkbox" value="Streak">连续同色</label>
+          <label class="check" title="最新 6 口一口一换，如庄闲庄闲庄闲"><input type="checkbox" value="SingleAlternation">单口交替（6 口）</label>
+          <label class="check" title="最新 6 口两口一换，如庄庄闲闲庄庄"><input type="checkbox" value="DoubleAlternation">两口交替（6 口）</label>
+          <label class="check" title="最新 9 口三口一换，如庄庄庄闲闲闲庄庄庄"><input type="checkbox" value="TripleAlternation">三口交替（9 口）</label>
+        </div>
         <label>模式<select id="mode"><option value="ReadOnly">只读</option><option value="Simulation">模拟</option><option value="Live">真实</option></select></label>
         <label>触发走势<select id="triggerSide"><option value="Both">庄和闲</option><option value="BankerOnly">仅庄</option><option value="PlayerOnly">仅闲</option></select></label>
         <label>连续次数<input id="streakLength" type="number" min="2" max="20"></label>
@@ -194,6 +202,7 @@
     const $ = id => document.getElementById(id);
     const value = id => $(id).value;
     const number = id => Number(value(id));
+    const patternBoxes = () => Array.from(document.querySelectorAll('#patterns input'));
 
     async function api(path, body = {}) {
       const response = await fetch(path, {
@@ -208,7 +217,7 @@
 
     function formSettings() {
       return {
-        mode: value('mode'), triggerSide: value('triggerSide'), streakLength: number('streakLength'),
+        mode: value('mode'), patterns: patternBoxes().filter(box => box.checked).map(box => box.value), triggerSide: value('triggerSide'), streakLength: number('streakLength'),
         direction: value('direction'), stakes: value('stakes'), dailyStakeLimit: number('dailyStakeLimit'),
         maxReservedStake: number('maxReservedStake'), minimumSeconds: number('minimumSeconds'),
         playAcceptedSound: $('playAcceptedSound').checked
@@ -220,6 +229,7 @@
         if (id === 'playAcceptedSound') $(id).checked = settings[id];
         else $(id).value = settings[id];
       }
+      for (const box of patternBoxes()) box.checked = settings.patterns.includes(box.value);
       settingsLoaded = true;
     }
 
@@ -259,6 +269,7 @@
       $('status').textContent = state.status;
       $('statusDot').classList.toggle('running', state.running);
       for (const id of ids) $(id).disabled = state.running;
+      for (const box of patternBoxes()) box.disabled = state.running;
       $('save').disabled = state.running;
       $('start').disabled = state.running;
       $('stop').disabled = !state.running;

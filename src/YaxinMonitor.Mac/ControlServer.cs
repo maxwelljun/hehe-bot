@@ -220,6 +220,7 @@ internal sealed class ControlServer : IAsyncDisposable
                 maxReservedStake = _settings.MaxReservedStake,
                 minimumSeconds = _settings.MinimumRemainingMilliseconds / 1000,
                 playAcceptedSound = _settings.PlayAcceptedSound,
+                patterns = _settings.Strategy.Patterns.Select(pattern => pattern.ToString()).ToArray(),
                 triggerSide = _settings.Strategy.TriggerSide.ToString(),
                 streakLength = _settings.Strategy.StreakLength,
                 direction = _settings.Strategy.Direction.ToString(),
@@ -292,6 +293,7 @@ internal sealed class ControlServer : IAsyncDisposable
         public decimal MaxReservedStake { get; init; }
         public int MinimumSeconds { get; init; } = 8;
         public bool PlayAcceptedSound { get; init; } = true;
+        public string[] Patterns { get; init; } = ["Streak"];
         public string TriggerSide { get; init; } = "Both";
         public int StreakLength { get; init; } = 6;
         public string Direction { get; init; } = "Opposite";
@@ -300,6 +302,10 @@ internal sealed class ControlServer : IAsyncDisposable
         public YaxinSettings ToSettings(YaxinSettings current)
         {
             if (!Enum.TryParse(Mode, out MonitorMode mode)) throw new ArgumentException("运行模式无效。");
+            StrategyPattern[] patterns = (Patterns ?? [])
+                .Select(value => Enum.TryParse(value, out StrategyPattern pattern) && Enum.IsDefined(pattern)
+                    ? pattern : throw new ArgumentException("识别模式无效。"))
+                .ToArray();
             if (!Enum.TryParse(TriggerSide, out StrategyTriggerSide triggerSide)) throw new ArgumentException("触发走势无效。");
             if (!Enum.TryParse(Direction, out StrategyDirection direction)) throw new ArgumentException("下注方向无效。");
             decimal[] stakes = Stakes.Split([',', '，', ';', '；', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
@@ -314,6 +320,7 @@ internal sealed class ControlServer : IAsyncDisposable
                 PlayAcceptedSound = PlayAcceptedSound,
                 Strategy = new StrategySettings
                 {
+                    Patterns = patterns,
                     TriggerSide = triggerSide,
                     StreakLength = StreakLength,
                     Direction = direction,

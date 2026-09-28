@@ -8,6 +8,13 @@ internal sealed class MainForm : Form
     private readonly StateStore _store;
     private readonly MonitorService _service;
     private readonly ComboBox _mode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 105 };
+    private readonly (StrategyPattern Pattern, CheckBox Box)[] _patterns =
+    [
+        (StrategyPattern.Streak, new() { Text = "连续同色", AutoSize = true }),
+        (StrategyPattern.SingleAlternation, new() { Text = "单口交替", AutoSize = true }),
+        (StrategyPattern.DoubleAlternation, new() { Text = "两口交替", AutoSize = true }),
+        (StrategyPattern.TripleAlternation, new() { Text = "三口交替", AutoSize = true })
+    ];
     private readonly ComboBox _triggerSide = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
     private readonly NumericUpDown _streakLength = NumberBox(20);
     private readonly ComboBox _direction = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
@@ -56,6 +63,11 @@ internal sealed class MainForm : Form
             _ => args.ListItem?.ToString()
         };
         _mode.SelectedItem = settings.Mode;
+        foreach (var (pattern, box) in _patterns)
+        {
+            box.Checked = settings.Strategy.Patterns.Contains(pattern);
+            box.Margin = new Padding(6, 5, 0, 0);
+        }
         _triggerSide.Items.AddRange(Enum.GetValues<StrategyTriggerSide>().Cast<object>().ToArray());
         _triggerSide.Format += (_, args) => args.Value = args.ListItem switch
         {
@@ -126,6 +138,7 @@ internal sealed class MainForm : Form
         settings.Controls.AddRange([
             SectionLabel("设置"),
             LabelFor("模式"), _mode,
+            LabelFor("识别"), .. _patterns.Select(item => (Control)item.Box),
             LabelFor("触发走势"), _triggerSide,
             LabelFor("连续次数"), _streakLength,
             LabelFor("方向"), _direction,
@@ -166,6 +179,10 @@ internal sealed class MainForm : Form
     private void ConfigureToolTips()
     {
         _toolTips.SetToolTip(_save, "保存当前设置，不启动监控。");
+        _toolTips.SetToolTip(_patterns[0].Box, "最新连续同色达到“连续次数”（默认 6 口），如庄庄庄庄庄庄。");
+        _toolTips.SetToolTip(_patterns[1].Box, "最新 6 口一口一换，如庄闲庄闲庄闲。");
+        _toolTips.SetToolTip(_patterns[2].Box, "最新 6 口两口一换，如庄庄闲闲庄庄。");
+        _toolTips.SetToolTip(_patterns[3].Box, "最新 9 口三口一换，如庄庄庄闲闲闲庄庄庄。");
         _toolTips.SetToolTip(_start, "使用当前设置启动监控，并恢复上次运行状态。");
         _toolTips.SetToolTip(_stop, "停止监控服务。专用 Chrome 不会关闭。");
         _toolTips.SetToolTip(_pause, "只暂停或恢复新的自动订单；监控和已受理订单继续运行。");
@@ -351,6 +368,7 @@ internal sealed class MainForm : Form
             .ToArray();
         var strategy = new StrategySettings
         {
+            Patterns = _patterns.Where(item => item.Box.Checked).Select(item => item.Pattern).ToArray(),
             TriggerSide = triggerSide,
             StreakLength = checked((int)_streakLength.Value),
             Direction = direction,
@@ -415,6 +433,7 @@ internal sealed class MainForm : Form
     private void SetSettingsEnabled(bool enabled)
     {
         _mode.Enabled = enabled;
+        foreach (var (_, box) in _patterns) box.Enabled = enabled;
         _triggerSide.Enabled = enabled;
         _streakLength.Enabled = enabled;
         _direction.Enabled = enabled;
