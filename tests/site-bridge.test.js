@@ -8,6 +8,7 @@ const vm = require("node:vm");
 async function main() {
   let submitCount = 0;
   let originalAckCount = 0;
+  let originalResultCount = 0;
   const ctrl = {
     tableId: 18,
     tableName: "Baccarat 18",
@@ -29,6 +30,9 @@ async function main() {
     },
     setBetResponseMsg() {
       originalAckCount++;
+    },
+    setBetResultMsgBC() {
+      originalResultCount++;
     }
   };
 
@@ -111,6 +115,18 @@ async function main() {
   assert.equal(ackEvents[0].gameSeq, 42);
   assert.equal(ackEvents[0].errorCode, 0);
   assert.equal(ackEvents[0].errorMessage, "");
+
+  ctrl.setBetResultMsgBC({ tableId: "18", result: "BANKER", winAmount: -10, videoId: "18202609290742", winOption: ["BANKER"] });
+  ctrl.tableRoundInfoBean.gameSeq = 44;
+  ctrl.setBetResultMsgBC({ tableId: "18", result: "TIE_X", winOption: ["TIE"], winAmount: 0 });
+  ctrl.setBetResultMsgBC({ tableId: "99", result: "PLAYER" });
+  assert.equal(originalResultCount, 3);
+  const resultEvents = context.window.__YAXIN_MONITOR__.poll().events;
+  assert.equal(resultEvents.length, 2);
+  assert.deepEqual([resultEvents[0].type, resultEvents[0].tableId, resultEvents[0].shoeSeq, resultEvents[0].gameSeq,
+    resultEvents[0].result, resultEvents[0].winAmount], ["betResult", 18, 7, 42, "BANKER", -10]);
+  assert.deepEqual([resultEvents[1].gameSeq, resultEvents[1].result], [44, "TIE"]);
+  context.window.__YAXIN_MONITOR__.poll();
 
   ctrl.tableRoundInfoBean.gameSeq = 43;
   let secondSubmitCount = 0;

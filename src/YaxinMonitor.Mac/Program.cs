@@ -7,10 +7,10 @@ internal static class Program
 {
     private const string DefaultControlUrl = "http://127.0.0.1:17868/";
 
-    public static async Task<int> Main()
+    public static async Task<int> Main(string[] args)
     {
         string controlUrl = Environment.GetEnvironmentVariable("YAXIN_MONITOR_CONTROL_URL") ?? DefaultControlUrl;
-        if (await ControlServer.IsAlreadyRunningAsync(controlUrl).ConfigureAwait(false))
+        if (!args.Contains("--after-update") && await ControlServer.IsAlreadyRunningAsync(controlUrl).ConfigureAwait(false))
         {
             MacShell.Open(controlUrl);
             return 0;
@@ -28,7 +28,7 @@ internal static class Program
                 args.Cancel = true;
                 server.RequestShutdown();
             };
-            await server.RunAsync().ConfigureAwait(false);
+            await server.RunAsync(args.Contains("--after-update")).ConfigureAwait(false);
             return 0;
         }
         catch (Exception exception)

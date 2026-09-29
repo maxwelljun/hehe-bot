@@ -15,9 +15,12 @@ internal sealed class ControlServer : IAsyncDisposable
         Converters = { new JsonStringEnumConverter() }
     };
 
+    private static readonly string AppVersion = typeof(ControlServer).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+
     private readonly string _url;
     private readonly StateStore _store;
     private readonly MonitorService _service;
+    private readonly LicenseClient _license;
     private readonly HttpListener _listener = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SemaphoreSlim _commandGate = new(1, 1);
@@ -25,9 +28,19 @@ internal sealed class ControlServer : IAsyncDisposable
     private readonly List<string> _logs = [];
     private readonly string _controlToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
     private readonly string _indexHtml;
+    private readonly string _instanceId = Convert.ToHexString(RandomNumberGenerator.GetBytes(8));
+    private readonly AppUpdater _updater;
+    private UpdateInfo? _availableUpdate;
+    private string _updateStage = "";
+    private int _updatePercent;
+    private string? _updateError;
+    private volatile bool _updating;
+    private long _lastPageSeen;
     private YaxinSettings _settings;
     private ServiceSnapshot? _snapshot;
     private string _status = "未连接";
+    private volatile bool _licensed;
+    private volatile string? _revokedMessage;
 
     public ControlServer(string url, StateStore store, YaxinSettings settings)
     {
@@ -38,8 +51,12 @@ internal sealed class ControlServer : IAsyncDisposable
         _service.LogReceived += OnLog;
         _service.StatusChanged += value => { lock (_viewLock) _status = value; };
         _service.SnapshotChanged += value => { lock (_viewLock) _snapshot = value; };
+        _license = new LicenseClient(store, AppVersion);
+        _license.Revoked += OnRevoked;
+        _updater = new AppUpdater(_license, store.DirectoryPath, AppVersion);
         _listener.Prefixes.Add(url);
         _indexHtml = LoadIndexHtml().Replace("__CONTROL_TOKEN__", _controlToken, StringComparison.Ordinal);
+        if (AppUpdater.ConsumeNotice(store.DirectoryPath) is { } notice) OnLog(notice);
         OnLog("当前策略：" + settings.Strategy.Summary + "。首次使用请启动监控并在 Chrome 中手动登录。");
     }
 
@@ -58,12 +75,12 @@ internal sealed class ControlServer : IAsyncDisposable
         }
     }
 
-    public async Task RunAsync()
+    public async Task RunAsync(bool afterUpdate = false)
     {
         _listener.Start();
         Task acceptLoop = AcceptLoopAsync(_shutdown.Token);
         if (!string.Equals(Environment.GetEnvironmentVariable("YAXIN_MONITOR_NO_BROWSER"), "1", StringComparison.Ordinal))
-            MacShell.Open(_url);
+            _ = OpenBrowserAsync(afterUpdate);
         try
         {
             await Task.Delay(Timeout.InfiniteTimeSpan, _shutdown.Token).ConfigureAwait(false);
@@ -76,6 +93,18 @@ internal sealed class ControlServer : IAsyncDisposable
     }
 
     public void RequestShutdown() => _shutdown.Cancel();
+
+    private async Task OpenBrowserAsync(bool afterUpdate)
+    {
+        if (afterUpdate)
+        {
+            // 更新重启后，原来的控制页会自动刷新重连；几秒内没有页面连上时才新开一个。
+            try { await Task.Delay(TimeSpan.FromSeconds(5), _shutdown.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            if (Environment.TickCount64 - Interlocked.Read(ref _lastPageSeen) < 5_000) return;
+        }
+        MacShell.Open(_url);
+    }
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
@@ -103,6 +132,7 @@ internal sealed class ControlServer : IAsyncDisposable
             }
             if (context.Request.HttpMethod == "GET" && path == "/api/state")
             {
+                Interlocked.Exchange(ref _lastPageSeen, Environment.TickCount64);
                 await WriteJsonAsync(context.Response, BuildView()).ConfigureAwait(false);
                 return;
             }
@@ -136,8 +166,65 @@ internal sealed class ControlServer : IAsyncDisposable
 
     private async Task HandleCommandAsync(HttpListenerContext context, string path)
     {
+        if (path is not ("/api/license/login" or "/api/quit"))
+        {
+            if (_revokedMessage is { } revoked) throw new InvalidOperationException(revoked);
+            if (!_licensed) throw new InvalidOperationException("请先登录授权。");
+        }
         switch (path)
         {
+            case "/api/license/login":
+            {
+                if (_licensed) break;
+                LoginRequest request = await ReadJsonAsync<LoginRequest>(context.Request).ConfigureAwait(false);
+                LicenseLoginResult result = await _license.LoginAsync(request.Username, request.Password).ConfigureAwait(false);
+                if (!result.Success) throw new InvalidOperationException(result.Message);
+                _licensed = true;
+                _license.Attach(_service, () => _settings);
+                OnLog($"授权成功：{_license.Username}（本机 {_license.MachineId[..12]}）。");
+                _ = CheckUpdateQuietlyAsync();
+                break;
+            }
+            case "/api/update/check":
+            {
+                if (_updating) throw new InvalidOperationException("正在更新，请稍候。");
+                _updateError = null;
+                UpdateInfo? update = await _updater.CheckAsync().ConfigureAwait(false);
+                _availableUpdate = update;
+                await WriteJsonAsync(context.Response, new { ok = true, current = AppVersion, update }).ConfigureAwait(false);
+                return;
+            }
+            case "/api/update/install":
+            {
+                if (_updating) throw new InvalidOperationException("正在更新，请稍候。");
+                if (_service.IsRunning) throw new InvalidOperationException("请先停止监控，再更新程序。");
+                UpdateInfo update = _availableUpdate ?? throw new InvalidOperationException("没有可安装的新版本，请先检查更新。");
+                _updater.EnsureInstallable();
+                _updating = true;
+                _updateError = null;
+                _ = Task.Run(() => InstallUpdateAsync(update));
+                break;
+            }
+            case "/api/update/rollback":
+            {
+                if (_updating) throw new InvalidOperationException("正在更新，请稍候。");
+                if (_service.IsRunning) throw new InvalidOperationException("请先停止监控，再回滚版本。");
+                BackupVersion target = _updater.RollbackTarget() ?? throw new InvalidOperationException("没有可回滚的备份版本。");
+                _updating = true;
+                try
+                {
+                    _updater.RollbackAndRestart(target);
+                }
+                catch
+                {
+                    _updating = false;
+                    throw;
+                }
+                _updateStage = "restarting";
+                OnLog($"已回滚到 v{target.Version}，程序即将重启。");
+                ScheduleShutdown();
+                break;
+            }
             case "/api/save":
             {
                 YaxinSettings settings = (await ReadJsonAsync<SettingsRequest>(context.Request).ConfigureAwait(false)).ToSettings(_settings);
@@ -150,6 +237,7 @@ internal sealed class ControlServer : IAsyncDisposable
             case "/api/start":
             case "/api/reset-start":
             {
+                if (_updating) throw new InvalidOperationException("正在更新程序，暂不能启动监控。");
                 YaxinSettings settings = (await ReadJsonAsync<SettingsRequest>(context.Request).ConfigureAwait(false)).ToSettings(_settings);
                 if (path == "/api/reset-start") _service.ResetRuntimeState(settings);
                 else _service.UpdateSettings(settings);
@@ -182,11 +270,8 @@ internal sealed class ControlServer : IAsyncDisposable
                 break;
             case "/api/quit":
                 await _service.StopAsync().ConfigureAwait(false);
-                _ = Task.Run(async () =>
-                {
-                    await Task.Delay(200).ConfigureAwait(false);
-                    _shutdown.Cancel();
-                });
+                await _license.FlushAsync().ConfigureAwait(false);
+                ScheduleShutdown();
                 break;
             default:
                 context.Response.StatusCode = (int)HttpStatusCode.NotFound;
@@ -194,6 +279,57 @@ internal sealed class ControlServer : IAsyncDisposable
                 return;
         }
         await WriteJsonAsync(context.Response, new { ok = true }).ConfigureAwait(false);
+    }
+
+    private void ScheduleShutdown() => _ = Task.Run(async () =>
+    {
+        await Task.Delay(300).ConfigureAwait(false);
+        _shutdown.Cancel();
+    });
+
+    private async Task CheckUpdateQuietlyAsync()
+    {
+        try
+        {
+            UpdateInfo? update = await _updater.CheckAsync().ConfigureAwait(false);
+            if (update is null || _updating) return;
+            _availableUpdate = update;
+            OnLog($"发现新版本 v{update.Version}，停止监控后点击“更新到 v{update.Version}”即可安装。");
+        }
+        catch { }
+    }
+
+    private async Task InstallUpdateAsync(UpdateInfo update)
+    {
+        try
+        {
+            _updateStage = "downloading";
+            _updatePercent = 0;
+            OnLog($"开始下载 v{update.Version}...");
+            string archive = await _updater.DownloadAsync(update, new Progress<int>(percent => _updatePercent = percent)).ConfigureAwait(false);
+            await _commandGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_service.IsRunning) throw new InvalidOperationException("监控已启动，更新已取消。");
+                _updateStage = "installing";
+                _updater.InstallAndRestart(update, archive);
+                _updateStage = "restarting";
+                OnLog($"v{update.Version} 安装完成，程序即将重启。");
+                await _license.FlushAsync().ConfigureAwait(false);
+                ScheduleShutdown();
+            }
+            finally
+            {
+                _commandGate.Release();
+            }
+        }
+        catch (Exception exception)
+        {
+            _updateStage = "";
+            _updateError = exception.Message;
+            _updating = false;
+            OnLog("更新失败：" + exception.Message);
+        }
     }
 
     private object BuildView()
@@ -207,9 +343,31 @@ internal sealed class ControlServer : IAsyncDisposable
             logs = _logs.ToArray();
             snapshot = _snapshot;
         }
+        var license = new
+        {
+            loggedIn = _licensed,
+            username = _license.Username,
+            savedUsername = _licensed ? null : _license.LoadSavedUsername(),
+            machineId = _license.MachineId[..12],
+            revoked = _revokedMessage
+        };
+        if (!_licensed || _revokedMessage is not null)
+            return new { version = AppVersion, instance = _instanceId, license, running = _service.IsRunning, status };
+        var update = new
+        {
+            available = _availableUpdate,
+            updating = _updating,
+            stage = _updateStage,
+            percent = _updatePercent,
+            error = _updateError,
+            rollback = _updating ? null : _updater.RollbackTarget()?.Version
+        };
         return new
         {
-            version = "1.4.2",
+            version = AppVersion,
+            instance = _instanceId,
+            update,
+            license,
             running = _service.IsRunning,
             ordersPaused = _service.OrdersPaused,
             status,
@@ -236,6 +394,19 @@ internal sealed class ControlServer : IAsyncDisposable
         CryptographicOperations.FixedTimeEquals(
             Encoding.UTF8.GetBytes(request.Headers["X-Control-Token"] ?? ""),
             Encoding.UTF8.GetBytes(_controlToken));
+
+    private void OnRevoked(string message)
+    {
+        _revokedMessage = message;
+        OnLog("授权已被撤销：" + message + " 监控已停止。");
+        _ = Task.Run(async () =>
+        {
+            await _commandGate.WaitAsync().ConfigureAwait(false);
+            try { await _service.StopAsync().ConfigureAwait(false); }
+            catch { }
+            finally { _commandGate.Release(); }
+        });
+    }
 
     private void OnLog(string message)
     {
@@ -281,6 +452,7 @@ internal sealed class ControlServer : IAsyncDisposable
         _shutdown.Cancel();
         _listener.Close();
         await _service.DisposeAsync().ConfigureAwait(false);
+        await _license.DisposeAsync().ConfigureAwait(false);
         _service.LogReceived -= OnLog;
         _commandGate.Dispose();
         _shutdown.Dispose();
@@ -330,6 +502,12 @@ internal sealed class ControlServer : IAsyncDisposable
             settings.Validate();
             return settings;
         }
+    }
+
+    private sealed record LoginRequest
+    {
+        public string Username { get; init; } = "";
+        public string Password { get; init; } = "";
     }
 
     private sealed record ReconcileRequest

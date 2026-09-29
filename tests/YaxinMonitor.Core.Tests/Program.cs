@@ -136,6 +136,50 @@ var tests = new (string Name, Action Run)[]
         Equal(bet.Amount, engine.ReservedStake);
         True(engine.State.Tables[1].ActiveChase is null);
     }),
+    ("Site result push settles a loss before the road updates", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        IReadOnlyList<EngineEvent> events = engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Banker, Now());
+        Equal(BaccaratOutcome.Banker, events.OfType<SettlementEvent>().Single().Outcome);
+        Equal("Settled", engine.State.Orders[bet.OrderKey].Status);
+        Equal(1, engine.State.Tables[1].ActiveChase!.AttemptIndex);
+        snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 1] };
+        events = engine.Observe(snapshot, Now().AddMinutes(1));
+        False(events.OfType<SettlementEvent>().Any());
+        Equal(20m, Candidate(events).Amount);
+    }),
+    ("Site result push wins and ignores repeats", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        True(engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Player, Now()).OfType<ChaseCompletedEvent>().Single().Won);
+        Equal(0, engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Player, Now()).Count);
+        Equal(0, engine.ApplySiteResult(1, "B1", 1, bet.GameSeq + 1, BaccaratOutcome.Player, Now()).Count);
+    }),
+    ("Site result push settles an order deferred by a new shoe", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        engine.Observe(snapshot with { ShoeSeq = 2, GameSeq = 1, State = "S", History = [] }, Now().AddMinutes(1));
+        Equal("SettlementPending", engine.State.Orders[bet.OrderKey].Status);
+        engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Banker, Now().AddMinutes(1));
+        Equal("Settled", engine.State.Orders[bet.OrderKey].Status);
+        Equal(0m, engine.ReservedStake);
+    }),
+    ("Site result push confirms an order whose ack timed out", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(bet, Now());
+        engine.MarkUnknown(bet.OrderKey, Now());
+        Equal(10m, engine.UncertainStake);
+        engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Tie, Now());
+        Equal("Settled", engine.State.Orders[bet.OrderKey].Status);
+        Equal(10m, engine.State.DailyAcceptedStake);
+        Equal(0m, engine.UncertainStake);
+        Equal(ChaseStatus.Ready, engine.State.Tables[1].ActiveChase!.Status);
+    }),
     ("New shoe may create a new order while old settlement is pending", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);

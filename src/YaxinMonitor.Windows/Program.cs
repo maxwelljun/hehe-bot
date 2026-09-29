@@ -20,7 +20,13 @@ internal static class Program
         try
         {
             YaxinSettings settings = store.LoadSettings();
-            Application.Run(new MainForm(store, settings));
+            string version = typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+            var license = new LicenseClient(store, version);
+            using (var login = new LoginForm(license))
+            {
+                if (login.ShowDialog() != DialogResult.OK) return;
+            }
+            Application.Run(new MainForm(store, settings, license));
         }
         catch (Exception exception)
         {

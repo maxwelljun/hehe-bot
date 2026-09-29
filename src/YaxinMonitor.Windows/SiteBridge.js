@@ -16,6 +16,7 @@
   let sequence = 0;
   const pendingOrders = [];
   const hookedTables = new WeakSet();
+  const hookedResultTables = new WeakSet();
   let existingInfo = null;
   try { existingInfo = existingBridge && existingBridge.info(); } catch (_) { }
   const sessionId = existingInfo && existingInfo.sessionId
@@ -78,7 +79,50 @@
     pendingOrders.splice(matchIndex, 1);
   }
 
+  // The site pushes setBetResultMsgBC only for tables the player has chips on, right when the round is
+  // drawn and before the road history updates, so it settles our own order even if the shoe ends.
+  function betResultOutcome(message) {
+    const result = String(message && message.result || "").toUpperCase();
+    if (result === "BANKER" || result === "PLAYER" || result === "TIE") return result;
+    const options = Array.isArray(message && message.winOption) ? message.winOption.map(String) : [];
+    return options.includes("TIE") ? "TIE" : "";
+  }
+
+  function captureBetResult(ctrl, message) {
+    const tableId = Number(ctrl.tableId);
+    if (message && message.tableId != null && Number(message.tableId) !== tableId) return;
+    const round = ctrl.tableRoundInfoBean || {};
+    let shoeSeq = Number(round.shoeSeq || 0);
+    let gameSeq = Number(round.gameSeq || 0);
+    // videoId is tableId + yyyymmdd + two-digit shoe + two-digit game, e.g. 3008202609290509.
+    const videoId = String(message && message.videoId || "");
+    const prefix = String(tableId);
+    if (videoId.startsWith(prefix) && videoId.length === prefix.length + 12 && /^\d+$/.test(videoId)) {
+      shoeSeq = Number(videoId.slice(-4, -2));
+      gameSeq = Number(videoId.slice(-2));
+    }
+    emit("betResult", {
+      tableId,
+      shoeSeq,
+      gameSeq,
+      errorCode: 0,
+      result: betResultOutcome(message),
+      winAmount: finite(message && message.winAmount)
+    });
+  }
+
   function hookTable(ctrl) {
+    const originalResult = ctrl && ctrl.setBetResultMsgBC;
+    if (!hookedResultTables.has(ctrl) && typeof originalResult === "function") {
+      ctrl.setBetResultMsgBC = function (message) {
+        try {
+          return originalResult.apply(this, arguments);
+        } finally {
+          try { captureBetResult(ctrl, message); } catch (_) { }
+        }
+      };
+      hookedResultTables.add(ctrl);
+    }
     if (hookedTables.has(ctrl)) return true;
     const original = ctrl && ctrl.setBetResponseMsg;
     if (typeof original !== "function") return false;

@@ -1,0 +1,19 @@
+[Unit]
+Description=Yaxin Monitor license server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/wp/hehebot
+ExecStart=/root/wp/hehebot/yaxin-license
+Environment=YAXIN_LICENSE_DATA=/root/wp/hehebot/data
+Environment=YAXIN_LICENSE_CERT=/root/wp/hehebot/cert/server.pfx
+Environment=YAXIN_LICENSE_PORT=38443
+Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=/root/wp/hehebot/.net
+Restart=always
+RestartSec=3
+MemoryMax=300M
+
+[Install]
+WantedBy=multi-user.target

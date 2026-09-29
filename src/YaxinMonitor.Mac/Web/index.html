@@ -105,6 +105,16 @@
     .toast { position: fixed; right: 18px; bottom: 18px; max-width: min(440px, calc(100vw - 36px)); padding: 11px 14px; border-radius: 5px; color: #fff; background: #243039; box-shadow: 0 8px 24px rgba(0,0,0,.2); opacity: 0; transform: translateY(8px); pointer-events: none; transition: .18s; }
     .toast.show { opacity: 1; transform: translateY(0); }
     .toast.error { background: var(--red); }
+    .gate { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; background: var(--bg); }
+    .gate[hidden] { display: none; }
+    .gate-card { width: min(380px, calc(100vw - 30px)); padding: 24px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 18px 50px rgba(0,0,0,.12); }
+    .gate-card h2 { font-size: 17px; margin-bottom: 6px; }
+    .gate-card p { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .gate-card label { margin-bottom: 12px; }
+    .gate-card .gate-actions { display: flex; gap: 8px; margin-top: 6px; }
+    .gate-card .gate-actions button { flex: 1; }
+    .gate-error { min-height: 20px; margin-top: 10px; color: var(--red); font-size: 13px; }
+    .gate-foot { margin-top: 12px; color: var(--muted); font-size: 12px; }
     @media (max-width: 1050px) { .settings { grid-template-columns: repeat(4, minmax(120px, 1fr)); } }
     @media (max-width: 650px) {
       header { padding: 0 12px; }
@@ -149,6 +159,8 @@
         <span class="spacer"></span>
         <button id="resetStart" class="danger">重置状态并启动</button>
         <button id="openData">数据目录</button>
+        <button id="update" title="从授权服务器下载当前系统的最新版本，替换本程序并自动重启；旧版本会备份用于回滚">检查更新</button>
+        <button id="rollback" title="恢复到更新前备份的版本并自动重启">回滚版本</button>
         <button id="quit">退出程序</button>
       </div>
     </section>
@@ -190,6 +202,23 @@
     </div>
   </dialog>
   <div class="toast" id="toast"></div>
+
+  <div class="gate" id="gate" hidden>
+    <div class="gate-card">
+      <h2 id="gateTitle">授权登录</h2>
+      <p id="gateText">请使用管理员分配的账号登录，登录后才能使用本工具。</p>
+      <div id="gateForm">
+        <label>用户名<input id="licenseUser" autocomplete="username"></label>
+        <label>密码<input id="licensePassword" type="password" autocomplete="current-password"></label>
+        <div class="gate-actions">
+          <button id="licenseLogin" class="primary">登录</button>
+          <button id="gateQuit">退出程序</button>
+        </div>
+      </div>
+      <div class="gate-error" id="gateError"></div>
+      <div class="gate-foot" id="gateMachine"></div>
+    </div>
+  </div>
 
   <script>
     const token = '__CONTROL_TOKEN__';
@@ -263,7 +292,31 @@
       }
     }
 
+    let gatePrefilled = false;
+    function renderGate(state) {
+      const license = state.license;
+      const blocked = !license.loggedIn || !!license.revoked;
+      $('gate').hidden = !blocked;
+      if (!blocked) return false;
+      $('version').textContent = 'v' + state.version;
+      $('gateMachine').textContent = '本机编号：' + license.machineId;
+      if (license.revoked) {
+        $('gateTitle').textContent = '授权已被撤销';
+        $('gateText').textContent = license.revoked + ' 监控已停止。';
+        $('gateForm').hidden = true;
+        $('gateError').textContent = '';
+        return true;
+      }
+      if (!gatePrefilled) {
+        gatePrefilled = true;
+        $('licenseUser').value = license.savedUsername || '';
+        ($('licenseUser').value ? $('licensePassword') : $('licenseUser')).focus();
+      }
+      return true;
+    }
+
     function render(state) {
+      if (renderGate(state)) return;
       if (!settingsLoaded) loadSettings(state.settings);
       $('version').textContent = 'v' + state.version;
       $('status').textContent = state.status;
@@ -277,6 +330,7 @@
       $('toggleOrders').disabled = !state.running || state.settings.mode !== 'Live';
       $('toggleOrders').textContent = state.ordersPaused ? '恢复自动下单' : '暂停自动下单';
       $('reconcile').disabled = state.reconciliationOrders.length === 0;
+      renderUpdate(state);
 
       const snapshot = state.snapshot;
       const tables = snapshot?.tables || [];
@@ -295,14 +349,41 @@
       if (atBottom) log.scrollTop = log.scrollHeight;
     }
 
+    let instanceId = null;
     async function refresh() {
       try {
         const response = await fetch('/api/state', {cache: 'no-store'});
         if (!response.ok) throw new Error('控制服务不可用');
-        render(await response.json());
+        const state = await response.json();
+        // 程序更新或回滚后会以新实例重启，控制口令随之变化，需要重新加载页面。
+        if (instanceId && state.instance && state.instance !== instanceId) { location.reload(); return; }
+        instanceId = state.instance;
+        render(state);
       } catch (error) {
         $('status').textContent = error.message;
         $('statusDot').classList.remove('running');
+      }
+    }
+
+    let updateState = null;
+    function renderUpdate(state) {
+      const update = state.update;
+      updateState = update;
+      if (!update) return;
+      const button = $('update');
+      if (update.updating) {
+        button.textContent = update.stage === 'downloading' ? `下载中 ${update.percent}%`
+          : update.stage === 'installing' ? '正在安装...' : '正在重启...';
+      } else {
+        button.textContent = update.available ? `更新到 v${update.available.version}` : '检查更新';
+      }
+      button.classList.toggle('primary', !!update.available && !update.updating);
+      button.disabled = update.updating;
+      $('rollback').disabled = update.updating || state.running || !update.rollback;
+      $('rollback').title = update.rollback ? `恢复到备份的 v${update.rollback} 并自动重启` : '还没有可回滚的备份版本';
+      if (update.updating) {
+        $('start').disabled = true;
+        $('resetStart').disabled = true;
       }
     }
 
@@ -337,8 +418,51 @@
       command('/api/reset-start', formSettings(), '运行状态已重置，监控正在启动');
     };
     $('openData').onclick = () => command('/api/open-data', {}, '已打开数据目录');
+    $('update').onclick = async () => {
+      try {
+        const result = await api('/api/update/check');
+        if (!result.update) { notify(`当前 v${result.current} 已是最新版本`); await refresh(); return; }
+        if ($('stop').disabled === false) { notify(`发现新版本 v${result.update.version}，请先停止监控再更新`, true); await refresh(); return; }
+        const size = (result.update.size / 1024 / 1024).toFixed(1);
+        const notes = result.update.notes ? `\n\n更新说明：\n${result.update.notes}` : '';
+        if (!confirm(`发现新版本 v${result.update.version}（当前 v${result.current}，约 ${size} MB）。${notes}\n\n将下载并替换当前程序，旧版本自动备份，完成后程序会重启，需要重新登录。确认更新？`)) { await refresh(); return; }
+        await command('/api/update/install', {}, '开始下载更新');
+      } catch (error) {
+        notify(error.message, true);
+      }
+    };
+    $('rollback').onclick = () => {
+      const version = updateState?.rollback;
+      if (!version) { notify('没有可回滚的备份版本', true); return; }
+      if (!confirm(`将恢复到备份的 v${version}，当前版本也会保留备份。完成后程序会重启，需要重新登录。确认回滚？`)) return;
+      command('/api/update/rollback', {}, '正在回滚，程序即将重启');
+    };
     $('quit').onclick = async () => {
       if (!confirm('退出后将停止监控和自动下单。确认退出？')) return;
+      try { await api('/api/quit'); } catch {}
+      document.body.innerHTML = '<main><section class="toolbar"><h2>程序已退出</h2></section></main>';
+    };
+
+    async function licenseLogin() {
+      $('gateError').textContent = '';
+      $('licenseLogin').disabled = true;
+      $('licenseLogin').textContent = '正在验证...';
+      try {
+        await api('/api/license/login', {username: $('licenseUser').value, password: $('licensePassword').value});
+        $('licensePassword').value = '';
+        await refresh();
+      } catch (error) {
+        $('gateError').textContent = error.message;
+        $('licensePassword').select();
+      } finally {
+        $('licenseLogin').disabled = false;
+        $('licenseLogin').textContent = '登录';
+      }
+    }
+    $('licenseLogin').onclick = licenseLogin;
+    $('licensePassword').onkeydown = event => { if (event.key === 'Enter') licenseLogin(); };
+    $('licenseUser').onkeydown = event => { if (event.key === 'Enter') $('licensePassword').focus(); };
+    $('gateQuit').onclick = async () => {
       try { await api('/api/quit'); } catch {}
       document.body.innerHTML = '<main><section class="toolbar"><h2>程序已退出</h2></section></main>';
     };

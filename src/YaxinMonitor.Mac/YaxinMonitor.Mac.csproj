@@ -4,11 +4,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>YaxinMonitor</AssemblyName>
     <RootNamespace>YaxinMonitor.Mac</RootNamespace>
-    <Version>1.4.2</Version>
+    <Version>1.6.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../YaxinMonitor.Core/YaxinMonitor.Core.csproj" />
+    <Compile Include="../YaxinMonitor.Windows/AppUpdater.cs" Link="Runtime/AppUpdater.cs" />
     <Compile Include="../YaxinMonitor.Windows/CdpClient.cs" Link="Runtime/CdpClient.cs" />
+    <Compile Include="../YaxinMonitor.Windows/LicenseClient.cs" Link="Runtime/LicenseClient.cs" />
     <Compile Include="../YaxinMonitor.Windows/MonitorService.cs" Link="Runtime/MonitorService.cs" />
     <Compile Include="../YaxinMonitor.Windows/SiteRuntimeAdapter.cs" Link="Runtime/SiteRuntimeAdapter.cs" />
     <EmbeddedResource Include="../YaxinMonitor.Windows/SiteBridge.js" Link="Runtime/SiteBridge.js" />

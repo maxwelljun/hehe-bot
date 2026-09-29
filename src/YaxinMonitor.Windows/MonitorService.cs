@@ -22,6 +22,10 @@ internal sealed class MonitorService : IAsyncDisposable
     private readonly AcceptedNotifier _notifier = new();
     private readonly ConcurrentQueue<BetCandidate> _candidates = new();
     private readonly ConcurrentDictionary<long, string> _quarantinedTables = new();
+    // Orders sent over the current page bridge, so a missing bet-result push can be trusted as "not placed".
+    private readonly Dictionary<string, long> _orderBridgeConnection = [];
+    private readonly Dictionary<string, DateTimeOffset> _unknownRoundPassedAt = [];
+    private long _bridgeConnection;
     private readonly object _engineLock = new();
     private readonly object _settingsLock = new();
     private YaxinSettings _settings;
@@ -175,6 +179,7 @@ internal sealed class MonitorService : IAsyncDisposable
                 _candidates.Clear();
                 StatusChanged?.Invoke("正在连接页面...");
                 await adapter.ConnectAsync(settings.ChromeDebugPort, cancellationToken).ConfigureAwait(false);
+                lock (_engineLock) _bridgeConnection++;
                 WriteLog("页面桥接已连接。");
                 await PollLoopAsync(adapter, settings, cancellationToken).ConfigureAwait(false);
             }
@@ -194,7 +199,8 @@ internal sealed class MonitorService : IAsyncDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             BridgePoll poll = await adapter.PollAsync(cancellationToken).ConfigureAwait(false);
-            HandleBridgeEvents(poll.Events, settings);
+            HandleBridgeEvents(poll.Events, poll.Tables, settings);
+            ResolveUnplacedUnknownOrders(poll);
             QuarantineUnknownTables();
 
             string? observationIssue = poll.BridgeVersion != 3
@@ -266,12 +272,17 @@ internal sealed class MonitorService : IAsyncDisposable
         }
     }
 
-    private void HandleBridgeEvents(IEnumerable<BridgeEvent> events, YaxinSettings settings)
+    private void HandleBridgeEvents(IEnumerable<BridgeEvent> events, IReadOnlyList<TableSnapshot> tables, YaxinSettings settings)
     {
         lock (_engineLock)
         {
             foreach (BridgeEvent item in events)
             {
+                if (item.Type == "betResult")
+                {
+                    HandleBetResult(item, tables, settings);
+                    continue;
+                }
                 if (item.Type != "betAck" || string.IsNullOrEmpty(item.OrderKey)) continue;
                 if (!_engine.State.Orders.TryGetValue(item.OrderKey, out OrderState? order)
                     || order.Status is not ("Submitted" or "Unknown")) continue;
@@ -303,6 +314,63 @@ internal sealed class MonitorService : IAsyncDisposable
                 }
             }
         }
+    }
+
+    private void HandleBetResult(BridgeEvent item, IReadOnlyList<TableSnapshot> tables, YaxinSettings settings)
+    {
+        BaccaratOutcome outcome = item.Result switch
+        {
+            "BANKER" => BaccaratOutcome.Banker,
+            "PLAYER" => BaccaratOutcome.Player,
+            "TIE" => BaccaratOutcome.Tie,
+            _ => BaccaratOutcome.None
+        };
+        if (outcome == BaccaratOutcome.None) return;
+        string name = tables.FirstOrDefault(table => table.TableId == item.TableId)?.TableName ?? $"桌台 {item.TableId}";
+        HandleEngineEvents(_engine.ApplySiteResult(item.TableId, name, item.ShoeSeq, item.GameSeq, outcome, DateTimeOffset.Now), settings);
+        if (!_engine.State.Orders.Values.Any(order => order.TableId == item.TableId && order.Status == "Unknown")
+            && _quarantinedTables.TryRemove(item.TableId, out _))
+            WriteLog($"桌台 {item.TableId} 已按网站结算推送解除隔离，继续监控和处理新订单。");
+    }
+
+    // An order whose ack timed out is treated as not placed once its round has been drawn and the site pushed no
+    // bet result for it. Only orders sent over the current bridge qualify: a reconnect may have dropped the push.
+    private void ResolveUnplacedUnknownOrders(BridgePoll poll)
+    {
+        DateTimeOffset now = DateTimeOffset.Now;
+        var resolvedTables = new List<long>();
+        lock (_engineLock)
+        {
+            foreach (OrderState order in _engine.State.Orders.Values.Where(order => order.Status == "Unknown" && !order.IsSimulation).ToArray())
+            {
+                if (!_orderBridgeConnection.TryGetValue(order.OrderKey, out long connection) || connection != _bridgeConnection) continue;
+                TableSnapshot? table = poll.Tables.FirstOrDefault(value => value.TableId == order.TableId);
+                if (table is null || (table.ShoeSeq == order.ShoeSeq && table.GameSeq <= order.GameSeq)) continue;
+                if (!_unknownRoundPassedAt.TryGetValue(order.OrderKey, out DateTimeOffset passedAt))
+                {
+                    _unknownRoundPassedAt[order.OrderKey] = now;
+                    continue;
+                }
+                if (now - passedAt < TimeSpan.FromSeconds(10)) continue;
+                try
+                {
+                    _engine.MarkRejected(order.OrderKey, -9002, now);
+                }
+                catch (InvalidOperationException)
+                {
+                    continue;
+                }
+                _unknownRoundPassedAt.Remove(order.OrderKey);
+                _store.SaveState(_engine.State);
+                _store.AppendOrder(order);
+                WriteLog($"订单自动对账：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，该局已开奖但网站没有推送本单结算，判定未下注，追注按原档继续。");
+                if (!_engine.State.Orders.Values.Any(value => value.TableId == order.TableId && value.Status == "Unknown"))
+                    resolvedTables.Add(order.TableId);
+            }
+        }
+        foreach (long tableId in resolvedTables)
+            if (_quarantinedTables.TryRemove(tableId, out _))
+                WriteLog($"桌台 {tableId} 已解除隔离，继续监控和处理新订单。");
     }
 
     private void HandleEngineEvents(IReadOnlyList<EngineEvent> events, YaxinSettings settings)
@@ -354,6 +422,14 @@ internal sealed class MonitorService : IAsyncDisposable
             TableSnapshot? table = poll.Tables.FirstOrDefault(value => value.TableId == candidate.TableId);
             validationError = ValidateCandidate(candidate, table, poll.Balance, settings);
             _engine.MarkSubmitted(candidate, DateTimeOffset.Now);
+            _orderBridgeConnection[candidate.OrderKey] = _bridgeConnection;
+            if (_orderBridgeConnection.Count > 200)
+                foreach (string key in _orderBridgeConnection.Keys.Where(key => !_engine.State.Orders.TryGetValue(key, out OrderState? order)
+                    || order.Status is not ("Submitted" or "Unknown")).ToArray())
+                {
+                    _orderBridgeConnection.Remove(key);
+                    _unknownRoundPassedAt.Remove(key);
+                }
             if (validationError is not null)
                 _engine.MarkRejected(candidate.OrderKey, -9001, DateTimeOffset.Now);
             _store.SaveState(_engine.State);

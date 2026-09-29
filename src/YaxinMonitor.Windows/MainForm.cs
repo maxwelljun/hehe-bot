@@ -7,6 +7,7 @@ internal sealed class MainForm : Form
 {
     private readonly StateStore _store;
     private readonly MonitorService _service;
+    private readonly LicenseClient _license;
     private readonly ComboBox _mode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 105 };
     private readonly (StrategyPattern Pattern, CheckBox Box)[] _patterns =
     [
@@ -29,6 +30,11 @@ internal sealed class MainForm : Form
     private readonly Button _pause = new() { Text = "恢复自动下单", AutoSize = true, Enabled = false };
     private readonly Button _save = new() { Text = "保存设置", AutoSize = true };
     private readonly Button _reconcile = new() { Text = "订单对账", AutoSize = true };
+    private readonly Button _update = new() { Text = "检查更新", AutoSize = true, Margin = new Padding(8, 0, 0, 0) };
+    private readonly Button _rollback = new() { Text = "回滚版本", AutoSize = true };
+    private readonly AppUpdater _updater;
+    private UpdateInfo? _availableUpdate;
+    private bool _updating;
     private readonly Label _connection = new() { AutoSize = true, Text = "未连接", Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold) };
     private readonly Label _summary = new() { AutoSize = true, Text = "桌台 0 · 余额 0 · 今日 0 · 在途 0" };
     private readonly DataGridView _tables = new();
@@ -39,16 +45,18 @@ internal sealed class MainForm : Form
     private YaxinSettings _currentSettings;
     private bool _exiting;
 
-    public MainForm(StateStore store, YaxinSettings settings)
+    public MainForm(StateStore store, YaxinSettings settings, LicenseClient license)
     {
         _store = store;
         _currentSettings = settings;
+        _license = license;
+        _updater = new AppUpdater(license, store.DirectoryPath, typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "0.0.0");
         _service = new MonitorService(store, settings);
         _service.LogReceived += message => Ui(() => AddLog(message));
         _service.StatusChanged += message => Ui(() => _connection.Text = message);
         _service.SnapshotChanged += snapshot => Ui(() => ApplySnapshot(snapshot));
 
-        Text = "亚信全桌监控";
+        Text = $"亚信全桌监控 v{_updater.CurrentVersion}";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(960, 640);
         Size = new Size(1180, 760);
@@ -103,6 +111,8 @@ internal sealed class MainForm : Form
         _pause.Click += PauseClicked;
         _save.Click += SaveClicked;
         _reconcile.Click += ReconcileClicked;
+        _update.Click += UpdateClicked;
+        _rollback.Click += RollbackClicked;
         FormClosing += OnFormClosing;
 
         ConfigureToolTips();
@@ -121,8 +131,127 @@ internal sealed class MainForm : Form
         };
         _tray.DoubleClick += (_, _) => ShowWindow();
 
+        AddLog($"授权成功：{license.Username}（本机 {license.MachineId[..12]}）。");
         AddLog("当前策略：" + settings.Strategy.Summary + "。首次使用请启动监控并在 Chrome 中手动登录。");
+        _license.Revoked += message => Ui(async () => await RevokedAsync(message));
+        _license.Attach(_service, () => _currentSettings);
+        if (AppUpdater.ConsumeNotice(store.DirectoryPath) is { } notice) AddLog(notice);
         UpdateCommandState();
+        Shown += async (_, _) => await CheckUpdateQuietlyAsync();
+    }
+
+    private async Task CheckUpdateQuietlyAsync()
+    {
+        try
+        {
+            _availableUpdate = await _updater.CheckAsync();
+            if (_availableUpdate is null) return;
+            _update.Text = $"更新到 v{_availableUpdate.Version}";
+            AddLog($"发现新版本 v{_availableUpdate.Version}，停止监控后点击“更新到 v{_availableUpdate.Version}”即可安装。");
+        }
+        catch { }
+    }
+
+    private async void UpdateClicked(object? sender, EventArgs args)
+    {
+        if (_updating) return;
+        if (_service.IsRunning)
+        {
+            MessageBox.Show(this, "请先停止监控，再更新程序。", "亚信全桌监控", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        _updating = true;
+        UpdateCommandState();
+        string originalText = _update.Text;
+        try
+        {
+            _update.Text = "正在检查...";
+            UpdateInfo? update = await _updater.CheckAsync();
+            _availableUpdate = update;
+            if (update is null)
+            {
+                originalText = "检查更新";
+                MessageBox.Show(this, $"当前 v{_updater.CurrentVersion} 已是最新版本。", "亚信全桌监控", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            originalText = $"更新到 v{update.Version}";
+            _updater.EnsureInstallable();
+            string notes = update.Notes.Length > 0 ? "\n\n更新说明：\n" + update.Notes : "";
+            if (MessageBox.Show(this,
+                    $"发现新版本 v{update.Version}（当前 v{_updater.CurrentVersion}，约 {update.Size / 1024d / 1024:0.0} MB）。{notes}\n\n"
+                    + "更新会下载新程序并替换当前程序，旧版本自动备份，可随时回滚。完成后程序自动重启，需要重新登录。\n\n立即更新？",
+                    "亚信全桌监控", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+
+            AddLog($"开始下载 v{update.Version}...");
+            var progress = new Progress<int>(percent => _update.Text = $"下载中 {percent}%");
+            string archive = await _updater.DownloadAsync(update, progress);
+            if (_service.IsRunning) throw new InvalidOperationException("监控已启动，更新已取消。");
+            _update.Text = "正在安装...";
+            await Task.Run(() => _updater.InstallAndRestart(update, archive));
+            AddLog($"v{update.Version} 安装完成，程序即将重启。");
+            await ExitAsync();
+        }
+        catch (Exception exception)
+        {
+            AddLog("更新失败：" + exception.Message);
+            MessageBox.Show(this, "更新失败：" + exception.Message, "亚信全桌监控", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _updating = false;
+            if (!IsDisposed)
+            {
+                _update.Text = originalText;
+                UpdateCommandState();
+            }
+        }
+    }
+
+    private async void RollbackClicked(object? sender, EventArgs args)
+    {
+        if (_updating) return;
+        if (_service.IsRunning)
+        {
+            MessageBox.Show(this, "请先停止监控，再回滚版本。", "亚信全桌监控", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        BackupVersion? target = _updater.RollbackTarget();
+        if (target is null)
+        {
+            MessageBox.Show(this, "没有可回滚的备份版本。在线更新后才会产生备份。", "亚信全桌监控", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (MessageBox.Show(this, $"将当前 v{_updater.CurrentVersion} 回滚到备份的 v{target.Version}，程序会自动重启，需要重新登录。\n\n当前版本也会保留备份。确认回滚？",
+                "亚信全桌监控", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        _updating = true;
+        UpdateCommandState();
+        try
+        {
+            await Task.Run(() => _updater.RollbackAndRestart(target));
+            AddLog($"已回滚到 v{target.Version}，程序即将重启。");
+            await ExitAsync();
+        }
+        catch (Exception exception)
+        {
+            AddLog("回滚失败：" + exception.Message);
+            MessageBox.Show(this, "回滚失败：" + exception.Message, "亚信全桌监控", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        finally
+        {
+            _updating = false;
+            if (!IsDisposed) UpdateCommandState();
+        }
+    }
+
+    private async Task RevokedAsync(string message)
+    {
+        AddLog("授权已被撤销：" + message);
+        _exiting = true;
+        _tray.Visible = false;
+        await _service.DisposeAsync();
+        MessageBox.Show(this, message + "\n\n监控已停止，程序将退出。", "亚信全桌监控", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        await _license.DisposeAsync();
+        Close();
     }
 
     private Control BuildLayout()
@@ -165,6 +294,8 @@ internal sealed class MainForm : Form
             Process.Start(new ProcessStartInfo("explorer.exe", _store.DirectoryPath) { UseShellExecute = true });
         };
         status.Controls.Add(dataButton);
+        status.Controls.Add(_update);
+        status.Controls.Add(_rollback);
 
         var logGroup = new GroupBox { Text = "运行记录", Dock = DockStyle.Fill, Padding = new Padding(8) };
         logGroup.Controls.Add(_log);
@@ -179,6 +310,8 @@ internal sealed class MainForm : Form
     private void ConfigureToolTips()
     {
         _toolTips.SetToolTip(_save, "保存当前设置，不启动监控。");
+        _toolTips.SetToolTip(_update, "从授权服务器下载最新版本并替换当前程序，旧版本自动备份。需先停止监控。");
+        _toolTips.SetToolTip(_rollback, "恢复到在线更新前备份的旧版本。需先停止监控。");
         _toolTips.SetToolTip(_patterns[0].Box, "最新连续同色达到“连续次数”（默认 6 口），如庄庄庄庄庄庄。");
         _toolTips.SetToolTip(_patterns[1].Box, "最新 6 口一口一换，如庄闲庄闲庄闲。");
         _toolTips.SetToolTip(_patterns[2].Box, "最新 6 口两口一换，如庄庄闲闲庄庄。");
@@ -422,9 +555,11 @@ internal sealed class MainForm : Form
         bool running = _service.IsRunning;
         bool live = _currentSettings.Mode == MonitorMode.Live;
         string orderCommand = _service.OrdersPaused ? "恢复自动下单" : "暂停自动下单";
-        _start.Enabled = !running;
+        _start.Enabled = !running && !_updating;
         _stop.Enabled = running;
-        _forceStart.Enabled = !running;
+        _forceStart.Enabled = !running && !_updating;
+        _update.Enabled = !_updating;
+        _rollback.Enabled = !running && !_updating;
         _pause.Enabled = running && live;
         _pause.Text = orderCommand;
         _trayOrders.Enabled = running && live;
@@ -477,6 +612,8 @@ internal sealed class MainForm : Form
         _exiting = true;
         _tray.Visible = false;
         await _service.DisposeAsync();
+        await _license.FlushAsync();
+        await _license.DisposeAsync();
         Close();
     }
 

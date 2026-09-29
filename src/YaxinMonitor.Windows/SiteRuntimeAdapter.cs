@@ -11,8 +11,11 @@ internal sealed record BridgeEvent
     public string SessionId { get; init; } = "";
     public string OrderKey { get; init; } = "";
     public long TableId { get; init; }
+    public long ShoeSeq { get; init; }
     public long GameSeq { get; init; }
     public int ErrorCode { get; init; }
+    public string Result { get; init; } = "";
+    public decimal? WinAmount { get; init; }
     public string ErrorMessage { get; init; } = "";
 }
 

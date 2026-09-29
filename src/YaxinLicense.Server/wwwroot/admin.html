@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>亚信监控授权后台</title>
+<style>
+  :root { --bg:#f4f6f9; --card:#fff; --line:#e3e7ee; --text:#1f2733; --muted:#6b7686; --ok:#16a34a; --bad:#dc2626; --warn:#d97706; --primary:#2563eb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; background:#111827; color:#fff; }
+  header h1 { font-size:16px; margin:0; flex:1; }
+  header button { background:transparent; color:#cbd5e1; border:1px solid #374151; }
+  main { padding:16px 20px; max-width:1500px; margin:0 auto; }
+  .tabs { display:flex; gap:6px; margin-bottom:12px; }
+  .tabs button { background:#e5e7eb; color:var(--text); border:none; }
+  .tabs button.active { background:var(--primary); color:#fff; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  .stats { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 16px; min-width:140px; }
+  .stat b { display:block; font-size:22px; }
+  .stat span { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; font-size:12px; background:#fafbfc; }
+  td.wrap { white-space:normal; }
+  button { font:inherit; padding:5px 12px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  button.primary { background:var(--primary); color:#fff; border-color:var(--primary); }
+  button.danger { color:var(--bad); border-color:#fecaca; }
+  button.small { padding:2px 8px; font-size:12px; }
+  input { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:#9ca3af; }
+  .dot.on { background:var(--ok); }
+  .tag { display:inline-block; padding:0 6px; border-radius:4px; font-size:12px; background:#eef2ff; color:#3730a3; }
+  .tag.bad { background:#fee2e2; color:var(--bad); }
+  .tag.ok { background:#dcfce7; color:#166534; }
+  .tag.warn { background:#fef3c7; color:#92400e; }
+  .muted { color:var(--muted); font-size:12px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #login { max-width:340px; margin:12vh auto; }
+  #login input { width:100%; margin:10px 0; }
+  #detail { position:fixed; inset:0 0 0 auto; width:min(860px,100%); background:#fff; box-shadow:-8px 0 30px rgba(0,0,0,.15); display:none; flex-direction:column; z-index:10; }
+  #detail.open { display:flex; }
+  #detail .head { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px; }
+  #detail .head h2 { font-size:15px; margin:0; flex:1; }
+  #detail .body { overflow:auto; padding:12px 16px; flex:1; }
+  pre.logs { background:#0f172a; color:#e2e8f0; padding:10px; border-radius:6px; font:12px/1.5 Menlo,Consolas,monospace; max-height:48vh; overflow:auto; white-space:pre-wrap; word-break:break-all; }
+  .kv { display:grid; grid-template-columns:120px 1fr; gap:4px 12px; font-size:13px; }
+  .kv div:nth-child(odd) { color:var(--muted); }
+  .err { color:var(--bad); min-height:20px; }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+<div id="login" class="card" hidden>
+  <h2 style="margin-top:0">授权后台登录</h2>
+  <input id="adminPassword" type="password" placeholder="管理员密码" autocomplete="current-password">
+  <button class="primary" id="loginButton" style="width:100%">登录</button>
+  <div class="err" id="loginError"></div>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>亚信监控授权后台</h1>
+    <span class="muted" id="refreshed"></span>
+    <button id="passwordButton">修改管理员密码</button>
+    <button id="logoutButton">退出</button>
+  </header>
+  <main>
+    <div class="stats" id="stats"></div>
+    <div class="tabs">
+      <button data-tab="machines" class="active">机器</button>
+      <button data-tab="users">用户</button>
+      <button data-tab="events">登录记录</button>
+      <button data-tab="updates">客户端更新</button>
+    </div>
+
+    <section id="tab-machines" class="card scroll">
+      <table>
+        <thead><tr>
+          <th>状态</th><th>机器</th><th>用户</th><th>系统</th><th>IP</th><th>版本</th>
+          <th>模式</th><th>余额</th><th>今日下注</th><th>在途</th><th>桌台/追注</th><th>最后上报</th><th>授权</th><th></th>
+        </tr></thead>
+        <tbody id="machineRows"></tbody>
+      </table>
+    </section>
+
+    <section id="tab-users" class="card" hidden>
+      <div class="row" style="margin-bottom:12px">
+        <input id="newUsername" placeholder="用户名">
+        <input id="newPassword" placeholder="密码（至少 8 位）">
+        <input id="newNote" placeholder="备注（可选）">
+        <button class="primary" id="createUser">创建用户</button>
+        <span class="err" id="userError"></span>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>用户名</th><th>状态</th><th>机器数</th><th>备注</th><th>创建时间</th><th>最后登录</th><th></th></tr></thead>
+          <tbody id="userRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-updates" class="card" hidden>
+      <div class="row" style="margin-bottom:8px">
+        <input id="updateFile" type="file" accept=".zip">
+        <input id="updateNotes" placeholder="更新说明（可选，同版本各平台共用）" style="flex:1;min-width:260px">
+        <button class="primary" id="uploadUpdate">上传更新包</button>
+        <span class="muted" id="uploadProgress"></span>
+      </div>
+      <div class="muted" style="margin-bottom:12px">文件名必须保持打包生成的格式，例如 YaxinMonitor-1.5.2-win-x64.zip、YaxinMonitor-1.5.2-osx-arm64.zip。每个平台以最高版本为最新版；工具点击“检查更新”后会下载对应平台的最新版。删除有问题的版本即可停止分发。1.5.1 及以后的版本同时出现在公开下载页 <a href="/download" target="_blank">/download</a>，可把该地址发给新用户首次安装。</div>
+      <div class="stats" id="updateLatest"></div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>平台</th><th>版本</th><th>文件</th><th>大小</th><th>SHA-256</th><th>上传时间</th><th>说明</th><th></th></tr></thead>
+          <tbody id="updateRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-events" class="card scroll" hidden>
+      <table>
+        <thead><tr><th>时间</th><th>类型</th><th>用户</th><th>机器</th><th>IP</th><th>说明</th></tr></thead>
+        <tbody id="eventRows"></tbody>
+      </table>
+    </section>
+  </main>
+</div>
+
+<div id="detail">
+  <div class="head">
+    <h2 id="detailTitle"></h2>
+    <button id="detailRefresh" class="small">刷新</button>
+    <button id="detailClose" class="small">关闭</button>
+  </div>
+  <div class="body">
+    <div class="kv" id="detailInfo"></div>
+    <h3>余额 / 下注走势（最近上报）</h3>
+    <div class="scroll" style="max-height:220px;overflow:auto">
+      <table><thead><tr><th>时间</th><th>余额</th><th>今日下注</th><th>在途</th><th>运行</th><th>自动下单</th><th>桌台</th><th>模式</th></tr></thead>
+      <tbody id="telemetryRows"></tbody></table>
+    </div>
+    <h3>运行日志（最近 1000 行）</h3>
+    <pre class="logs" id="detailLogs"></pre>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const money = v => v == null ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+const time = v => v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '—';
+const modeName = { ReadOnly: '只读', Simulation: '模拟', Live: '真实' };
+const runtimeName = { 'win-x64': 'Windows', 'osx-arm64': 'macOS Apple 芯片', 'osx-x64': 'macOS Intel' };
+const eventName = { 'update-download': '下载更新', 'package-download': '下载安装包', 'update-upload': '上传更新包', 'update-delete': '删除更新包', 'login': '登录成功', 'login-failed': '密码错误', 'login-denied': '拒绝登录', 'revoked': '运行中被禁用', 'admin-login': '后台登录', 'admin-login-failed': '后台密码错误' };
+let data = { users: [], machines: [] };
+let currentMachine = null;
+let timer = null;
+
+async function api(path, body) {
+  const options = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin': '1' }, body: JSON.stringify(body) };
+  const response = await fetch('/admin/api' + path, { credentials: 'same-origin', ...options });
+  const json = await response.json().catch(() => ({}));
+  if (response.status === 401 && path !== '/login') { showLogin(); throw new Error(json.error || '请先登录'); }
+  if (!response.ok) throw new Error(json.error || ('请求失败 ' + response.status));
+  return json;
+}
+
+function showLogin() {
+  clearInterval(timer);
+  $('app').hidden = true; $('login').hidden = false; $('adminPassword').focus();
+}
+
+async function login() {
+  $('loginError').textContent = '';
+  try {
+    await api('/login', { password: $('adminPassword').value });
+    $('adminPassword').value = '';
+    start();
+  } catch (e) { $('loginError').textContent = e.message; }
+}
+
+function start() {
+  $('login').hidden = true; $('app').hidden = false;
+  refresh();
+  clearInterval(timer);
+  timer = setInterval(refresh, 15000);
+}
+
+async function refresh() {
+  data = await api('/overview');
+  $('refreshed').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  renderStats(); renderMachines(); renderUsers();
+  if (!$('tab-events').hidden) loadEvents();
+  if (!$('tab-updates').hidden) loadUpdates();
+}
+
+let updateData = { runtimes: [], packages: [] };
+async function loadUpdates() {
+  updateData = await api('/updates');
+  const size = n => (n / 1024 / 1024).toFixed(1) + ' MB';
+  $('updateLatest').innerHTML = updateData.runtimes.map(r => {
+    const latest = updateData.packages.find(p => p.runtime === r);
+    const using = data.machines.filter(m => latest && m.version === latest.version).length;
+    return `<div class="stat"><b>${esc(latest ? 'v' + latest.version : '—')}</b><span>${esc(runtimeName[r] || r)} 最新版${latest ? ' · 已有 ' + using + ' 台在用' : '（未上传）'}</span></div>`;
+  }).join('');
+  $('updateRows').innerHTML = updateData.packages.map(p => {
+    const latest = updateData.packages.find(x => x.runtime === p.runtime) === p;
+    return `<tr>
+      <td>${esc(runtimeName[p.runtime] || p.runtime)}</td>
+      <td><b>${esc(p.version)}</b> ${latest ? '<span class="tag ok">最新</span>' : ''}</td>
+      <td>${esc(p.fileName)}</td><td>${size(p.size)}</td>
+      <td class="muted" title="${esc(p.sha256)}">${esc(p.sha256.slice(0, 16))}…</td>
+      <td>${time(p.uploadedAt)}</td>
+      <td class="wrap" style="max-width:320px">${esc(p.notes)}</td>
+      <td class="row">
+        <button class="small" data-upact="notes" data-v="${esc(p.version)}">说明</button>
+        <button class="small danger" data-upact="delete" data-f="${esc(p.fileName)}">删除</button>
+      </td></tr>`;
+  }).join('') || '<tr><td colspan="8" class="muted">还没有更新包。</td></tr>';
+}
+
+async function uploadUpdate() {
+  const file = $('updateFile').files[0];
+  if (!file) { alert('请先选择更新包'); return; }
+  const query = '?fileName=' + encodeURIComponent(file.name) + ($('updateNotes').value.trim() ? '&notes=' + encodeURIComponent($('updateNotes').value) : '');
+  $('uploadUpdate').disabled = true;
+  try {
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/admin/api/updates/upload' + query);
+      xhr.setRequestHeader('X-Admin', '1');
+      xhr.upload.onprogress = e => { if (e.lengthComputable) $('uploadProgress').textContent = '上传中 ' + Math.round(e.loaded * 100 / e.total) + '%'; };
+      xhr.onload = () => {
+        let json = {}; try { json = JSON.parse(xhr.responseText); } catch {}
+        if (xhr.status === 401) showLogin();
+        xhr.status >= 200 && xhr.status < 300 ? resolve(json) : reject(new Error(json.error || ('上传失败 ' + xhr.status)));
+      };
+      xhr.onerror = () => reject(new Error('上传失败，网络中断'));
+      xhr.send(file);
+    });
+    $('uploadProgress').textContent = '上传完成';
+    $('updateFile').value = ''; $('updateNotes').value = '';
+    await loadUpdates();
+  } catch (e) { $('uploadProgress').textContent = ''; alert(e.message); }
+  finally { $('uploadUpdate').disabled = false; }
+}
+
+function isOnline(m) {
+  return m.lastSeen && (new Date(data.now) - new Date(m.lastSeen)) / 1000 <= data.onlineSeconds;
+}
+
+function renderStats() {
+  const online = data.machines.filter(isOnline);
+  const running = online.filter(m => m.telemetry?.running);
+  const balance = online.reduce((s, m) => s + (m.telemetry?.balance || 0), 0);
+  const stake = online.reduce((s, m) => s + (m.telemetry?.dailyStake || 0), 0);
+  $('stats').innerHTML = [
+    ['在线机器', online.length + ' / ' + data.machines.length],
+    ['监控运行中', running.length],
+    ['在线余额合计', money(balance)],
+    ['在线今日下注合计', money(stake)],
+    ['用户', data.users.length],
+    ['禁用机器', data.machines.filter(m => !m.enabled).length]
+  ].map(([k, v]) => `<div class="stat"><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join('');
+}
+
+function renderMachines() {
+  $('machineRows').innerHTML = data.machines.map(m => {
+    const t = m.telemetry || {};
+    const online = isOnline(m);
+    const run = !online ? '<span class="tag">离线</span>'
+      : t.running ? (t.ordersPaused ? '<span class="tag warn">监控中·暂停下单</span>' : '<span class="tag ok">监控中</span>')
+      : '<span class="tag">已登录未运行</span>';
+    return `<tr>
+      <td><span class="dot ${online ? 'on' : ''}"></span>${run}</td>
+      <td><b>${esc(m.name || '未命名')}</b><div class="muted" title="${esc(m.machineId)}">${esc(m.machineId.slice(0, 12))}…${m.note ? ' · ' + esc(m.note) : ''}</div></td>
+      <td>${esc(m.username)}</td>
+      <td class="wrap" style="max-width:200px">${esc(m.os)}</td>
+      <td>${esc(m.ip)}</td>
+      <td>${esc(m.version)}</td>
+      <td>${esc(modeName[t.mode] || t.mode || '—')}</td>
+      <td>${money(t.balance)}</td>
+      <td>${money(t.dailyStake)}${t.dailyStakeLimit ? `<div class="muted">上限 ${money(t.dailyStakeLimit)}</div>` : ''}</td>
+      <td>${money(t.reservedStake)}</td>
+      <td>${t.tables ?? '—'} / ${t.chasing ?? '—'}</td>
+      <td>${time(m.lastSeen)}</td>
+      <td>${m.enabled ? '<span class="tag ok">允许</span>' : '<span class="tag bad">已禁用</span>'}</td>
+      <td class="row">
+        <button class="small" data-act="detail" data-id="${esc(m.machineId)}">详情</button>
+        <button class="small ${m.enabled ? 'danger' : ''}" data-act="toggle" data-id="${esc(m.machineId)}">${m.enabled ? '禁用' : '启用'}</button>
+        <button class="small" data-act="note" data-id="${esc(m.machineId)}">备注</button>
+        <button class="small danger" data-act="delete" data-id="${esc(m.machineId)}">删除</button>
+      </td></tr>`;
+  }).join('') || '<tr><td colspan="14" class="muted">暂无机器。用户在工具里登录后会自动出现在这里。</td></tr>';
+}
+
+function renderUsers() {
+  $('userRows').innerHTML = data.users.map(u => `<tr>
+    <td><b>${esc(u.username)}</b></td>
+    <td>${u.enabled ? '<span class="tag ok">正常</span>' : '<span class="tag bad">已禁用</span>'}</td>
+    <td>${u.machines}</td>
+    <td>${esc(u.note)}</td>
+    <td>${time(u.createdAt)}</td>
+    <td>${time(u.lastLogin)}</td>
+    <td class="row">
+      <button class="small ${u.enabled ? 'danger' : ''}" data-uact="toggle" data-u="${esc(u.username)}">${u.enabled ? '禁用' : '启用'}</button>
+      <button class="small" data-uact="password" data-u="${esc(u.username)}">重置密码</button>
+      <button class="small" data-uact="note" data-u="${esc(u.username)}">备注</button>
+      <button class="small danger" data-uact="delete" data-u="${esc(u.username)}">删除</button>
+    </td></tr>`).join('') || '<tr><td colspan="7" class="muted">还没有用户，请在上方创建。</td></tr>';
+}
+
+async function loadEvents() {
+  const events = await api('/events?limit=300');
+  $('eventRows').innerHTML = events.map(e => `<tr>
+    <td>${time(e.ts)}</td><td>${esc(eventName[e.kind] || e.kind)}</td><td>${esc(e.username)}</td>
+    <td class="muted" title="${esc(e.machineId)}">${esc(machineLabel(e.machineId))}</td><td>${esc(e.ip)}</td><td class="wrap">${esc(e.message)}</td></tr>`).join('');
+}
+
+function machineLabel(id) {
+  if (!id) return '';
+  const m = data.machines.find(x => x.machineId === id);
+  return m ? m.name : id.slice(0, 12) + '…';
+}
+
+async function openDetail(id) {
+  currentMachine = id;
+  const m = data.machines.find(x => x.machineId === id);
+  $('detailTitle').textContent = (m?.name || id) + ' · ' + (m?.username || '');
+  const info = { ...(m?.info || {}) };
+  const t = m?.telemetry || {};
+  const rows = [
+    ['机器 ID', id], ['授权', m?.enabled ? '允许' : '已禁用'], ['首次登录', time(m?.createdAt)], ['最近登录', time(m?.lastLogin)],
+    ['最后上报', time(m?.lastSeen)], ['IP', m?.ip], ['系统', m?.os], ['版本', m?.version],
+    ...Object.entries(info).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : v]),
+    ['网站连接', t.connected ? '已连接' : '未连接'], ['网站登录', t.siteLoggedIn ? '已登录' : '未登录'],
+    ['状态', t.status], ['策略', t.strategy], ['每日上限 / 在途上限', `${money(t.dailyStakeLimit)} / ${money(t.maxReservedStake)}`]
+  ];
+  $('detailInfo').innerHTML = rows.map(([k, v]) => `<div>${esc(k)}</div><div>${esc(v ?? '—')}</div>`).join('');
+  $('detail').classList.add('open');
+  const [logs, telemetry] = await Promise.all([
+    api('/machines/logs?limit=1000&machineId=' + encodeURIComponent(id)),
+    api('/machines/telemetry?limit=300&machineId=' + encodeURIComponent(id))
+  ]);
+  $('telemetryRows').innerHTML = telemetry.map(r => `<tr><td>${time(r.ts)}</td><td>${money(r.balance)}</td><td>${money(r.dailyStake)}</td>
+    <td>${money(r.reservedStake)}</td><td>${r.running ? '是' : '否'}</td><td>${r.ordersPaused ? '暂停' : '开启'}</td><td>${r.tables ?? '—'}</td><td>${esc(modeName[r.mode] || r.mode || '')}</td></tr>`).join('');
+  const pre = $('detailLogs');
+  pre.textContent = logs.map(l => l.line).join('\n') || '暂无日志';
+  pre.scrollTop = pre.scrollHeight;
+}
+
+async function run(action) {
+  try { await action(); await refresh(); } catch (e) { alert(e.message); }
+}
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.tab) {
+    document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
+    ['machines', 'users', 'events', 'updates'].forEach(t => $('tab-' + t).hidden = t !== b.dataset.tab);
+    if (b.dataset.tab === 'events') loadEvents().catch(err => alert(err.message));
+    if (b.dataset.tab === 'updates') loadUpdates().catch(err => alert(err.message));
+    return;
+  }
+  switch (b.dataset.upact) {
+    case 'notes': {
+      const current = updateData.packages.find(p => p.version === b.dataset.v)?.notes || '';
+      const notes = prompt(`v${b.dataset.v} 更新说明（同版本各平台共用）`, current); if (notes === null) return;
+      api('/updates/notes', { version: b.dataset.v, notes }).then(loadUpdates).catch(err => alert(err.message)); return;
+    }
+    case 'delete':
+      if (!confirm(`删除 ${b.dataset.f}？删除后工具将不再下载该版本。`)) return;
+      api('/updates/delete', { fileName: b.dataset.f }).then(loadUpdates).catch(err => alert(err.message)); return;
+  }
+  const id = b.dataset.id;
+  const m = id && data.machines.find(x => x.machineId === id);
+  switch (b.dataset.act) {
+    case 'detail': openDetail(id).catch(err => alert(err.message)); return;
+    case 'toggle':
+      if (m.enabled && !confirm(`禁用机器「${m.name}」？该机器上的工具会在下次上报时（1 分钟内）停止监控，并且无法再登录。`)) return;
+      run(() => api('/machines/update', { machineId: id, enabled: !m.enabled })); return;
+    case 'note': {
+      const note = prompt('机器备注', m.note || ''); if (note === null) return;
+      run(() => api('/machines/update', { machineId: id, note })); return;
+    }
+    case 'delete':
+      if (!confirm(`删除机器「${m.name}」及其日志？若未禁用，该机器下次登录会重新出现。`)) return;
+      run(() => api('/machines/delete', { machineId: id })); return;
+  }
+  const u = b.dataset.u;
+  switch (b.dataset.uact) {
+    case 'toggle': {
+      const user = data.users.find(x => x.username === u);
+      if (user.enabled && !confirm(`禁用用户「${u}」？其所有机器会在 1 分钟内停止监控。`)) return;
+      run(() => api('/users/update', { username: u, enabled: !user.enabled })); return;
+    }
+    case 'password': {
+      const password = prompt(`为「${u}」设置新密码（至少 8 位）`); if (!password) return;
+      run(() => api('/users/update', { username: u, password })); return;
+    }
+    case 'note': {
+      const note = prompt('用户备注', data.users.find(x => x.username === u).note || ''); if (note === null) return;
+      run(() => api('/users/update', { username: u, note })); return;
+    }
+    case 'delete':
+      if (!confirm(`删除用户「${u}」？已登录的机器会在下次上报时停止。`)) return;
+      run(() => api('/users/delete', { username: u })); return;
+  }
+});
+
+$('uploadUpdate').onclick = uploadUpdate;
+$('loginButton').onclick = login;
+$('adminPassword').onkeydown = e => { if (e.key === 'Enter') login(); };
+$('logoutButton').onclick = async () => { await api('/logout', {}).catch(() => {}); showLogin(); };
+$('detailClose').onclick = () => $('detail').classList.remove('open');
+$('detailRefresh').onclick = () => currentMachine && refresh().then(() => openDetail(currentMachine)).catch(err => alert(err.message));
+$('createUser').onclick = async () => {
+  $('userError').textContent = '';
+  try {
+    await api('/users', { username: $('newUsername').value, password: $('newPassword').value, note: $('newNote').value });
+    $('newUsername').value = $('newPassword').value = $('newNote').value = '';
+    await refresh();
+  } catch (e) { $('userError').textContent = e.message; }
+};
+$('passwordButton').onclick = async () => {
+  const current = prompt('当前管理员密码'); if (!current) return;
+  const next = prompt('新管理员密码（至少 8 位）'); if (!next) return;
+  try { await api('/password', { current, next }); alert('已修改，请重新登录。'); showLogin(); } catch (e) { alert(e.message); }
+};
+
+api('/overview').then(start).catch(showLogin);
+</script>
+</body>
+</html>

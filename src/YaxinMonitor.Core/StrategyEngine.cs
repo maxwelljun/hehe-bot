@@ -209,12 +209,60 @@ public sealed class StrategyEngine
         BaccaratOutcome outcome = LatestRun.Normalize(snapshot.History[chase.BetHistoryCount]);
         if (outcome == BaccaratOutcome.None) throw new InvalidDataException("结算结果不是有效的庄、闲或和。停止自动下注。");
 
-        OrderState order = RequireOrder(chase.PendingOrderKey);
+        SettleChase(table, chase, RequireOrder(chase.PendingOrderKey), outcome, snapshot.TableName, now, events, "");
+    }
+
+    /// <summary>
+    /// Settles the player's own order from the site's bet-result push. The push proves the bet was placed, so it
+    /// also resolves orders whose ack never arrived, and it settles orders that were deferred because the shoe
+    /// ended before the road showed the result.
+    /// </summary>
+    public IReadOnlyList<EngineEvent> ApplySiteResult(long tableId, string tableName, long shoeSeq, long gameSeq,
+        BaccaratOutcome outcome, DateTimeOffset now)
+    {
+        var events = new List<EngineEvent>();
+        if (outcome is not (BaccaratOutcome.Banker or BaccaratOutcome.Player or BaccaratOutcome.Tie)) return events;
+        OrderState? order = State.Orders.Values.FirstOrDefault(value => !value.IsSimulation
+            && value.TableId == tableId && value.ShoeSeq == shoeSeq && value.GameSeq == gameSeq
+            && value.Status is "Submitted" or "Accepted" or "Unknown" or "SettlementPending");
+        if (order is null) return events;
+
+        State.Tables.TryGetValue(tableId, out TableRuntimeState? table);
+        ChaseTaskState? chase = table?.ActiveChase is { } active && active.PendingOrderKey == order.OrderKey ? active : null;
+        string note = "";
+        if (order.Status is "Submitted" or "Unknown")
+        {
+            note = order.Status == "Unknown" ? "（未收到下注回执，已按网站结算推送确认下注成功）" : "";
+            if (chase is not null) MarkAccepted(order.OrderKey, now);
+            else CountAccepted(order, now);
+        }
+        else if (order.Status == "SettlementPending")
+        {
+            note = "（自动对账）";
+        }
+
+        if (chase is { Status: ChaseStatus.AwaitingSettlement } && table is not null)
+        {
+            SettleChase(table, chase, order, outcome, tableName, now, events, note);
+            return events;
+        }
+
         order.Status = "Settled";
         order.Outcome = outcome;
         order.UpdatedAt = now;
-        events.Add(new SettlementEvent(snapshot.TableId,
-            $"{snapshot.TableName} 第 {order.Attempt} 档结算为{SideText(outcome)}。", order.OrderKey, outcome));
+        events.Add(new SettlementEvent(tableId,
+            $"{tableName} 第 {order.Attempt} 档结算为{SideText(outcome)}{note}。", order.OrderKey, outcome));
+        return events;
+    }
+
+    private void SettleChase(TableRuntimeState table, ChaseTaskState chase, OrderState order, BaccaratOutcome outcome,
+        string tableName, DateTimeOffset now, List<EngineEvent> events, string note)
+    {
+        order.Status = "Settled";
+        order.Outcome = outcome;
+        order.UpdatedAt = now;
+        events.Add(new SettlementEvent(table.TableId,
+            $"{tableName} 第 {order.Attempt} 档结算为{SideText(outcome)}{note}。", order.OrderKey, outcome));
 
         if (outcome == BaccaratOutcome.Tie)
         {
@@ -227,7 +275,7 @@ public sealed class StrategyEngine
         {
             string taskKey = chase.TaskKey;
             table.ActiveChase = null;
-            events.Add(new ChaseCompletedEvent(snapshot.TableId, $"{snapshot.TableName} 下注获胜，任务结束。", taskKey, true));
+            events.Add(new ChaseCompletedEvent(table.TableId, $"{tableName} 下注获胜，任务结束。", taskKey, true));
             return;
         }
 
@@ -236,12 +284,21 @@ public sealed class StrategyEngine
         {
             string taskKey = chase.TaskKey;
             table.ActiveChase = null;
-            events.Add(new ChaseCompletedEvent(snapshot.TableId, $"{snapshot.TableName} {_strategy.Stakes.Length} 档均失败，任务结束。", taskKey, false));
+            events.Add(new ChaseCompletedEvent(table.TableId, $"{tableName} {_strategy.Stakes.Length} 档均失败，任务结束。", taskKey, false));
         }
         else
         {
             ClearPending(chase);
         }
+    }
+
+    private void CountAccepted(OrderState order, DateTimeOffset now)
+    {
+        order.ResponseCode = 0;
+        if (order.CountedInDailyStake) return;
+        RollAccountingDate(now);
+        State.DailyAcceptedStake += order.Amount;
+        order.CountedInDailyStake = true;
     }
 
     private void DeferSettlement(TableRuntimeState table, DateTimeOffset now, List<EngineEvent> events, string reason)
