@@ -8,6 +8,17 @@ var tests = new (string Name, Action Run)[]
         BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
         Equal(BetSide.Player, bet.Side); Equal(10m, bet.Amount); Equal(1, bet.Attempt);
     }),
+    ("Pattern progress counts forming alternation hands", () =>
+    {
+        int P(int[] h, StrategyPattern p) => PatternDetector.Progress(PatternDetector.RecentRuns(h), p);
+        Equal(4, P([1, 2, 3, 1, 2], StrategyPattern.SingleAlternation));
+        Equal(1, P([1, 1, 2], StrategyPattern.SingleAlternation));
+        Equal(5, P([1, 1, 2, 2, 1], StrategyPattern.DoubleAlternation));
+        Equal(0, P([1, 1, 2, 2, 2], StrategyPattern.DoubleAlternation));
+        Equal(8, P([1, 1, 1, 2, 2, 2, 1, 1], StrategyPattern.TripleAlternation));
+        Equal(3, P([2, 1, 1, 1], StrategyPattern.Streak));
+        Equal(9, PatternDetector.RequiredHands(StrategyPattern.TripleAlternation, 6));
+    }),
     ("Earlier six does not trigger", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1, 2]);

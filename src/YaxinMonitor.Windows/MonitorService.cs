@@ -6,7 +6,7 @@ namespace YaxinMonitor.Windows;
 
 internal sealed record TableViewState(
     long TableId, string Name, string State, long ShoeSeq, long GameSeq,
-    string LatestRun, int LatestRunCount, string Chase, int RemainingSeconds);
+    string LatestRun, int LatestRunCount, string Chase, int RemainingSeconds, double Closeness = 0);
 
 internal sealed record ServiceSnapshot(
     bool Connected, bool LoggedIn, string Bundle, decimal Balance,
@@ -462,14 +462,15 @@ internal sealed class MonitorService : IAsyncDisposable
         {
             rows = poll.Tables.Select(table =>
             {
-                LatestRun run = LatestRun.From(table.History);
+                IReadOnlyList<ResultRun> runs = PatternDetector.RecentRuns(table.History);
                 _engine.State.Tables.TryGetValue(table.TableId, out TableRuntimeState? runtime);
                 string chase = runtime?.ActiveChase is { } active
                     ? $"{settings.Strategy.PatternText(active.Pattern)} · 第 {active.AttemptIndex + 1} 档 / {active.Status}" : "-";
-                string latest = run.Count == 0 ? "-" : $"{OutcomeText(run.Side)} × {run.Count}";
+                (string latest, double closeness) = DescribeTrend(runs, settings.Strategy);
                 return new TableViewState(table.TableId, table.TableName, table.State, table.ShoeSeq, table.GameSeq,
-                    latest, run.Count, chase, table.RemainingMilliseconds / 1000);
-            }).OrderByDescending(row => row.LatestRunCount).ThenBy(row => row.TableId).ToArray();
+                    latest, runs.Count == 0 ? 0 : runs[0].Count, chase, table.RemainingMilliseconds / 1000, closeness);
+            }).OrderByDescending(row => row.Closeness).ThenByDescending(row => row.LatestRunCount)
+              .ThenBy(row => row.TableId).ToArray();
             dailyStake = _engine.State.DailyAcceptedStake;
             reservedStake = _engine.ReservedStake;
         }
@@ -482,6 +483,32 @@ internal sealed class MonitorService : IAsyncDisposable
         _store.Log(message);
         LogReceived?.Invoke(message);
     }
+
+    // Current streak plus progress of every enabled alternation mode that has at least two runs forming.
+    // Closeness is the best progress ratio over enabled modes and keeps near-trigger tables on top.
+    private static (string Text, double Closeness) DescribeTrend(IReadOnlyList<ResultRun> runs, StrategySettings strategy)
+    {
+        if (runs.Count == 0) return ("-", 0);
+        var parts = new List<string> { $"{OutcomeText(runs[0].Side)} × {runs[0].Count}" };
+        double closeness = 0;
+        foreach (StrategyPattern pattern in strategy.OrderedPatterns)
+        {
+            int hands = PatternDetector.Progress(runs, pattern);
+            int required = PatternDetector.RequiredHands(pattern, strategy.StreakLength);
+            closeness = Math.Max(closeness, Math.Min(hands, required) / (double)required);
+            if (pattern == StrategyPattern.Streak || hands <= runs[0].Count) continue;
+            parts.Add($"{AlternationName(pattern)} {hands}/{required}");
+        }
+        return (string.Join(" · ", parts), closeness);
+    }
+
+    private static string AlternationName(StrategyPattern pattern) => pattern switch
+    {
+        StrategyPattern.SingleAlternation => "单跳",
+        StrategyPattern.DoubleAlternation => "二排",
+        StrategyPattern.TripleAlternation => "三排",
+        _ => pattern.ToString()
+    };
 
     private static string SideText(BetSide side) => side == BetSide.Banker ? "庄" : "闲";
     private static string OutcomeText(BaccaratOutcome outcome) => outcome switch

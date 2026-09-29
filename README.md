@@ -1,5 +1,7 @@
 # ScreenWatch · Windows 通用画面监控
 
+独立的四模式历史模拟工具见 [离线回放说明](tools/offline-replay/README.md)。双击 `tools/offline-replay/index.html` 即可使用，支持连续同色、单口/两口/三口交替多选和固定方向的三档模拟，不连接网站。
+
 选择屏幕上的固定区域，保存参考画面，匹配后发出本地提醒。支持中文界面、系统托盘运行、截图留档和配置持久化。
 
 ## 快速使用

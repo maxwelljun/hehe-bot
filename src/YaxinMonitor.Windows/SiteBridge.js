@@ -169,6 +169,15 @@
         return { submitted: false, error: "下注金额无效。" };
       const ctrl = (tableManager._tableDataCtrlMap || {})[String(tableId)];
       if (!ctrl || Number(ctrl.gameType) !== 1) return { submitted: false, error: "找不到百家乐桌台。" };
+      // The site only acks inside the betting window, so a pending order from an earlier round or shoe
+      // will never be acked. The host has already timed it out; drop it so the table can bet again.
+      const round = ctrl.tableRoundInfoBean;
+      for (let i = pendingOrders.length - 1; i >= 0; i--) {
+        const order = pendingOrders[i];
+        if (order.tableId === tableId && round
+            && (order.shoeSeq !== Number(round.shoeSeq) || order.gameSeq !== Number(round.gameSeq)))
+          pendingOrders.splice(i, 1);
+      }
       if (pendingOrders.some(order => order.tableId === tableId))
         return { submitted: false, error: "该桌台已有订单等待网站确认。" };
       if (!hookTable(ctrl)) return { submitted: false, error: "无法监听目标桌台的下注回执。" };
@@ -193,7 +202,7 @@
       if (!betData) betData = bean.betZoneMap[request.side] = { confirmBetNum: 0, unConfirmBetNum: 0, preRoundBetNum: 0, betTime: 0 };
       betData.unConfirmBetNum = amount;
       bean.lastBetDataKey = request.side;
-      const pending = { orderKey, tableId, gameSeq };
+      const pending = { orderKey, tableId, shoeSeq, gameSeq };
       pendingOrders.push(pending);
       try {
         ctrl.reqBetMessage(1);

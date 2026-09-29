@@ -90,9 +90,9 @@ public sealed record StrategySettings
     public string PatternText(StrategyPattern pattern) => pattern switch
     {
         StrategyPattern.Streak => $"连续同色 {StreakLength} 口",
-        StrategyPattern.SingleAlternation => "单口交替 6 口",
-        StrategyPattern.DoubleAlternation => "两口交替 6 口",
-        StrategyPattern.TripleAlternation => "三口交替 9 口",
+        StrategyPattern.SingleAlternation => "单跳 6 口",
+        StrategyPattern.DoubleAlternation => "二排 6 口",
+        StrategyPattern.TripleAlternation => "三排 9 口",
         _ => pattern.ToString()
     };
 
@@ -178,6 +178,35 @@ public static class PatternDetector
         return runs;
     }
 
+    // Decisive hands of the pattern currently forming at the end of the history. For alternation the newest
+    // run may still be shorter than the block (in progress); every older run in the chain must be exact.
+    public static int Progress(IReadOnlyList<ResultRun> runs, StrategyPattern pattern)
+    {
+        if (runs.Count == 0) return 0;
+        int block = BlockSize(pattern);
+        if (block == 0) return runs[0].Count;
+        if (runs[0].Count > block) return 0;
+        int hands = runs[0].Count;
+        for (int i = 1; i < runs.Count && runs[i].Count == block; i++) hands += block;
+        return hands;
+    }
+
+    public static int RequiredHands(StrategyPattern pattern, int streakLength) => pattern switch
+    {
+        StrategyPattern.Streak => streakLength,
+        StrategyPattern.TripleAlternation => 9,
+        _ => 6
+    };
+
+    private static int BlockSize(StrategyPattern pattern) => pattern switch
+    {
+        StrategyPattern.Streak => 0,
+        StrategyPattern.SingleAlternation => 1,
+        StrategyPattern.DoubleAlternation => 2,
+        StrategyPattern.TripleAlternation => 3,
+        _ => throw new ArgumentOutOfRangeException(nameof(pattern))
+    };
+
     // Returns the run that anchors a match, or null. Alternation needs every run in the chain to have
     // exactly the block size, so a longer run is never trimmed to fit. The anchor is the first run of the
     // whole equal-sized chain, which stays stable while the pattern keeps extending.
@@ -185,13 +214,8 @@ public static class PatternDetector
     {
         if (runs.Count == 0) return null;
         if (pattern == StrategyPattern.Streak) return runs[0].Count == streakLength ? runs[0] : null;
-        (int block, int required) = pattern switch
-        {
-            StrategyPattern.SingleAlternation => (1, 6),
-            StrategyPattern.DoubleAlternation => (2, 3),
-            StrategyPattern.TripleAlternation => (3, 3),
-            _ => throw new ArgumentOutOfRangeException(nameof(pattern))
-        };
+        int block = BlockSize(pattern);
+        int required = RequiredHands(pattern, streakLength) / block;
         int chain = 0;
         while (chain < runs.Count && runs[chain].Count == block) chain++;
         return chain >= required ? runs[chain - 1] : null;

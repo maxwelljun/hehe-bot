@@ -209,7 +209,7 @@ internal sealed class ControlServer : IAsyncDisposable
         }
         return new
         {
-            version = "1.3.0",
+            version = "1.4.2",
             running = _service.IsRunning,
             ordersPaused = _service.OrdersPaused,
             status,

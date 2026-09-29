@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>四模式 · 离线回放</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; color: #203045; background: #f3f5f8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { max-width: 1180px; margin: 36px auto; padding: 0 22px 40px; }
+    h1 { font-size: 28px; margin: 8px 0; }
+    h2 { font-size: 18px; margin: 0 0 16px; }
+    p { line-height: 1.65; }
+    .muted, small { color: #526377; }
+    .tag { color: #21675e; font-size: 13px; letter-spacing: 2px; }
+    .card { padding: 24px; background: white; border: 1px solid #dce2ea; border-radius: 14px; margin-top: 20px; }
+    fieldset { border: 0; margin: 0; padding: 0; }
+    legend { font-weight: 600; margin-bottom: 12px; }
+    .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .mode { border: 1px solid #dce2ea; border-radius: 10px; padding: 14px; cursor: pointer; line-height: 1.9; }
+    .mode:has(input:checked) { background: #eff9f6; border-color: #398a78; }
+    .mode small { display: block; margin-left: 24px; }
+    input[type=checkbox] { accent-color: #237663; }
+    .settings, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-top: 18px; }
+    input[type=text], input[type=number], textarea { border: 1px solid #bac7d6; border-radius: 7px; padding: 10px; font: inherit; }
+    input[type=number] { width: 72px; }
+    input[type=text] { width: 170px; }
+    textarea { width: 100%; min-height: 152px; resize: vertical; line-height: 1.75; margin-top: 12px; }
+    button { font: inherit; padding: 10px 18px; border-radius: 7px; border: 1px solid #bac7d6; background: white; color: #203045; cursor: pointer; }
+    button.primary { background: #246e60; color: white; border-color: #246e60; }
+    button:disabled { opacity: .5; cursor: default; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #86bded; outline-offset: 2px; }
+    #message { min-height: 24px; color: #276153; margin-bottom: 0; }
+    #message.error { color: #b13737; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; white-space: nowrap; }
+    th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid #e5eaf0; }
+    th { color: #526377; font-weight: 600; }
+    .empty { color: #526377; padding: 20px 10px; }
+    .result-note { margin-top: 0; }
+    #pageLabel { font-size: 14px; }
+    @media(max-width: 800px) { .modes { grid-template-columns: repeat(2, 1fr); } main { margin-top: 20px; } .card { padding: 18px; } }
+    @media(max-width: 480px) { .modes { grid-template-columns: 1fr; } main { padding: 0 12px 24px; } }
+  </style>
+</head>
+<body>
+<main>
+  <div class="tag">本地历史数据 · 虚拟积分</div>
+  <h1>四模式离线回放</h1>
+  <p class="muted">选择图案，导入历史，逐口验证。全部计算在本机完成，无需安装或联网。</p>
+  <section class="card" aria-label="回放配置">
+    <fieldset>
+      <legend>识别模式（可单选或多选）</legend>
+      <div class="modes">
+        <label class="mode"><input type="checkbox" name="mode" value="streak" checked> 连续同色<small>庄庄庄庄庄庄</small><small>默认 6 口，可调整</small></label>
+        <label class="mode"><input type="checkbox" name="mode" value="single" checked> 单口交替<small>庄闲庄闲庄闲</small><small>6 口首次形成</small></label>
+        <label class="mode"><input type="checkbox" name="mode" value="double" checked> 两口交替<small>庄庄闲闲庄庄</small><small>6 口首次形成</small></label>
+        <label class="mode"><input type="checkbox" name="mode" value="triple" checked> 三口交替<small>庄庄庄闲闲闲庄庄庄</small><small>9 口首次形成</small></label>
+      </div>
+    </fieldset>
+    <div class="settings">
+      <label>同色口数 <input id="streakLength" type="number" min="2" max="20" value="6"></label>
+      <label>虚拟积分档位 <input id="stakes" type="text" value="10,20,40" aria-describedby="rules"></label>
+      <label><input id="sound" type="checkbox"> 回放完成提示音</label>
+    </div>
+    <p class="muted" id="rules">庄闲互换也识别；首次选择图案末口的反方向，后续保持该方向。命中即结束，最多三档；和局退回积分、不消耗档位。同一段持续图案只触发一次。多选模式独立回放。</p>
+  </section>
+  <section class="card" aria-label="历史输入">
+    <h2>历史记录</h2>
+    <label for="history">每行一桌的一靴：桌名 | 靴号 | 按时间从旧到新的结果</label>
+    <textarea id="history" spellcheck="false" aria-describedby="format">示例A | 1 | 庄庄庄庄庄庄闲
+示例B | 1 | 庄闲庄闲庄闲闲闲庄
+示例C | 1 | 庄庄闲闲庄庄庄庄闲
+示例D | 1 | 庄庄庄闲闲闲庄庄庄庄庄庄</textarea>
+    <small id="format">结果可使用庄/闲/和或 B/P/T；允许空格、逗号。同桌同靴只写一行，最多 50,000 口。换靴时旧的未完成模拟结束，不跨靴追踪。</small>
+    <div class="actions">
+      <button class="primary" id="run">开始回放</button>
+      <button id="import">导入 TXT</button>
+      <input id="file" type="file" accept=".txt,text/plain" hidden>
+      <button id="export" disabled>导出模拟明细 CSV</button>
+    </div>
+    <p id="message" role="status" aria-live="polite"></p>
+  </section>
+  <section class="card" aria-label="统计结果">
+    <h2>模式统计</h2>
+    <p class="muted result-note">命中率仅统计已完成任务；末尾数据不足的任务单列。积分按 1:1 简化计算，忽略佣金、限额等因素，不代表实际收益或未来概率。模式之间可能重叠，统计不可当作统一资金账户。</p>
+    <div class="table-wrap"><table><thead><tr><th>模式</th><th>触发</th><th>命中</th><th>三档未中／用尽档位</th><th>数据不足</th><th>完成任务命中率</th><th>已结算积分净变化</th></tr></thead><tbody id="summary"><tr><td colspan="7" class="empty">运行回放后显示统计</td></tr></tbody></table></div>
+  </section>
+  <section class="card" aria-label="模拟明细">
+    <h2>逐口模拟明细</h2>
+    <div class="table-wrap"><table><thead><tr><th>桌 / 靴</th><th>模式</th><th>触发口</th><th>观察口</th><th>固定方向</th><th>档位</th><th>虚拟积分</th><th>结果</th><th>积分变化</th></tr></thead><tbody id="details"><tr><td colspan="9" class="empty">仅使用触发口之后的结果验证</td></tr></tbody></table></div>
+    <div class="actions"><button id="prev" disabled>上一页</button><span id="pageLabel">0 条</span><button id="next" disabled>下一页</button></div>
+  </section>
+</main>
+<script id="replay-engine">
+"use strict";
+const OfflineReplay = (() => {
+  const modes = Object.freeze({streak: "连续同色", single: "单口交替", double: "两口交替", triple: "三口交替"});
+  const limits = {characters: 500000, rounds: 50000};
+  function parse(text) {
+    if (text.length > limits.characters) throw new Error("输入文件过大，请限制在 500,000 个字符内。");
+    const records = [], seen = new Set();
+    let total = 0;
+    text.replace(/^\uFEFF/, "").split(/\r?\n/).forEach((line, index) => {
+      if (!line.trim()) return;
+      const parts = line.split("|").map(value => value.trim());
+      if (parts.length !== 3 || !parts[0] || !parts[1]) throw new Error(`第 ${index + 1} 行应为：桌名 | 靴号 | 结果。`);
+      if (parts[0].length > 80 || parts[1].length > 80) throw new Error(`第 ${index + 1} 行桌名或靴号过长。`);
+      const key = JSON.stringify(parts.slice(0, 2));
+      if (seen.has(key)) throw new Error(`第 ${index + 1} 行重复了同桌同靴，请合并为一行。`);
+      seen.add(key);
+      const raw = parts[2].replace(/[\s,，、]/g, "").toUpperCase();
+      if (!raw || /[^庄闲和BPT]/.test(raw)) throw new Error(`第 ${index + 1} 行含无效结果，仅支持庄/闲/和或 B/P/T。`);
+      const history = Array.from(raw, value => ({庄:"B", 闲:"P", 和:"T"})[value] || value);
+      total += history.length;
+      if (total > limits.rounds) throw new Error("总结果数不能超过 50,000 口。");
+      records.push({table: parts[0], shoe: parts[1], history});
+    });
+    if (!records.length) throw new Error("请先输入历史记录。");
+    return records;
+  }
+  function validate(options) {
+    if (!options || !Array.isArray(options.modes) || !options.modes.length ||
+        options.modes.some(id => !Object.hasOwn(modes, id)) || new Set(options.modes).size !== options.modes.length)
+      throw new Error("请至少选择一种有效模式，且不要重复选择。");
+    if (!Number.isInteger(options.streakLength) || options.streakLength < 2 || options.streakLength > 20)
+      throw new Error("同色口数必须是 2–20 的整数。");
+    if (!Array.isArray(options.stakes) || !options.stakes.length || options.stakes.length > 3 ||
+        options.stakes.some(value => !Number.isInteger(value) || value < 1 || value > 1000000))
+      throw new Error("虚拟积分需填写 1–3 档，每档为 1–1000000 的整数。");
+  }
+  // Completed equal-sized runs form one chain. A new run temporarily breaks the
+  // chain until it reaches the required size; its anchor stays the same.
+  function signal(mode, runs, streakLength) {
+    const last = runs[runs.length - 1];
+    if (mode === "streak") return last.count === streakLength ? last.start : null;
+    const block = {single: 1, double: 2, triple: 3}[mode];
+    const required = mode === "single" ? 6 : 3;
+    if (last.count !== block) return null;
+    return last.chainLength >= required ? last.chainStart : null;
+  }
+  function replay(text, options) {
+    validate(options);
+    const records = parse(text), tasks = [], rows = [];
+    const summaries = options.modes.map(mode => ({mode, triggered: 0, hit: 0, missed: 0, pending: 0, net: 0}));
+    const stats = Object.fromEntries(summaries.map(item => [item.mode, item]));
+    for (const record of records) {
+      const runs = [], active = {}, consumed = Object.fromEntries(options.modes.map(id => [id, new Set()]));
+      for (let index = 0; index < record.history.length; index++) {
+        const outcome = record.history[index];
+        // Resolve existing tasks first; tasks created at this index start at the next result.
+        for (const mode of options.modes) {
+          const task = active[mode];
+          if (!task) continue;
+          const amount = options.stakes[task.attempt - 1];
+          const result = outcome === "T" ? "tie" : outcome === task.side ? "hit" : "miss";
+          const net = result === "tie" ? 0 : result === "hit" ? amount : -amount;
+          rows.push({table: record.table, shoe: record.shoe, mode, trigger: task.trigger, round: index + 1,
+            side: task.side, attempt: task.attempt, amount, result, net});
+          task.net += net;
+          stats[mode].net += net;
+          if (result === "hit") { task.status = "hit"; stats[mode].hit++; delete active[mode]; }
+          else if (result === "miss") {
+            if (task.attempt === options.stakes.length) { task.status = "miss"; stats[mode].missed++; delete active[mode]; }
+            else task.attempt++;
+          }
+        }
+        if (outcome === "T") continue;
+        const last = runs[runs.length - 1];
+        if (last && last.side === outcome) last.count++;
+        else runs.push({side: outcome, count: 1, start: index + 1});
+        const current = runs[runs.length - 1], previous = runs[runs.length - 2];
+        const extendsChain = previous && previous.count === current.count;
+        current.chainLength = extendsChain ? previous.chainLength + 1 : 1;
+        current.chainStart = extendsChain ? previous.chainStart : current.start;
+        for (const mode of options.modes) {
+          const anchor = signal(mode, runs, options.streakLength);
+          if (anchor === null || consumed[mode].has(anchor)) continue;
+          consumed[mode].add(anchor);
+          // A pattern appearing during an active task is consumed, never queued for a late entry.
+          if (active[mode]) continue;
+          const task = {table: record.table, shoe: record.shoe, mode, trigger: index + 1,
+            side: outcome === "B" ? "P" : "B", attempt: 1, status: "pending", net: 0};
+          active[mode] = task;
+          tasks.push(task);
+          stats[mode].triggered++;
+        }
+      }
+      for (const mode of options.modes) {
+        const task = active[mode];
+        if (!task) continue;
+        stats[mode].pending++;
+        rows.push({table: task.table, shoe: task.shoe, mode, trigger: task.trigger, round: null,
+          side: task.side, attempt: task.attempt, amount: options.stakes[task.attempt - 1], result: "pending", net: 0});
+      }
+    }
+    return {tasks, rows, summaries, records: records.length};
+  }
+  const resultNames = {hit: "命中", miss: "未命中", tie: "和局·原档继续", pending: "数据不足·未结算"};
+  function values(row) {
+    return [row.table, row.shoe, modes[row.mode], row.trigger, row.round ?? "", row.side === "B" ? "庄" : "闲",
+      row.attempt, row.amount, resultNames[row.result], row.net];
+  }
+  function csv(result) {
+    const escape = value => {
+      let text = String(value);
+      if (typeof value === "string" && /^[\s]*[=+\-@]/.test(text)) text = "'" + text;
+      return '"' + text.replace(/"/g, '""') + '"';
+    };
+    return "\uFEFF" + [["桌名", "靴号", "模式", "触发口", "观察口", "固定方向", "档位", "虚拟积分", "结果", "积分变化"],
+      ...result.rows.map(values)].map(row => row.map(escape).join(",")).join("\r\n");
+  }
+  return {modes, replay, csv, values};
+})();
+</script>
+<script>
+"use strict";
+(() => {
+  const $ = id => document.getElementById(id);
+  let result = null, page = 0, audio = null;
+  const pageSize = 100;
+  function message(text, error = false) { $("message").textContent = text; $("message").className = error ? "error" : ""; }
+  function row(parent, values) {
+    const tr = document.createElement("tr");
+    values.forEach(value => { const td = document.createElement("td"); td.textContent = String(value); tr.append(td); });
+    parent.append(tr);
+  }
+  function renderPage() {
+    $("details").replaceChildren();
+    const rows = result?.rows || [];
+    rows.slice(page * pageSize, (page + 1) * pageSize).forEach(item => {
+      const values = OfflineReplay.values(item);
+      row($("details"), [`${values[0]} / ${values[1]}`, ...values.slice(2)]);
+    });
+    if (!rows.length) row($("details"), ["当前记录没有触发所选模式"]);
+    $("prev").disabled = page === 0;
+    $("next").disabled = (page + 1) * pageSize >= rows.length;
+    $("pageLabel").textContent = rows.length ? `${page + 1} / ${Math.ceil(rows.length / pageSize)} 页 · ${rows.length} 条` : "0 条";
+  }
+  function invalidate() {
+    result = null; page = 0; $("export").disabled = true;
+    $("summary").replaceChildren(); row($("summary"), ["配置或历史已变化，请重新回放"]);
+    renderPage(); message("配置或历史已变化，请重新回放。");
+  }
+  async function beep() {
+    try {
+      audio ||= new (window.AudioContext || window.webkitAudioContext)();
+      await audio.resume();
+      if (!$("sound").checked) return;
+      const oscillator = audio.createOscillator(), gain = audio.createGain();
+      oscillator.connect(gain); gain.connect(audio.destination); oscillator.frequency.value = 660;
+      gain.gain.setValueAtTime(0.07, audio.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.2);
+      oscillator.start(); oscillator.stop(audio.currentTime + 0.2);
+    } catch { message("回放完成；浏览器未能播放提示音。"); }
+  }
+  $("run").onclick = () => {
+    try {
+      result = OfflineReplay.replay($("history").value, {
+        modes: Array.from(document.querySelectorAll('input[name="mode"]:checked'), input => input.value),
+        streakLength: Number($("streakLength").value),
+        stakes: $("stakes").value.split(/[,，]/).map(value => Number(value.trim()))
+      });
+      page = 0; $("summary").replaceChildren();
+      result.summaries.forEach(item => {
+        const completed = item.hit + item.missed;
+        row($("summary"), [OfflineReplay.modes[item.mode], item.triggered, item.hit, item.missed, item.pending,
+          completed ? `${(100 * item.hit / completed).toFixed(1)}%` : "—", item.net]);
+      });
+      renderPage(); $("export").disabled = !result.rows.length;
+      message(`已回放 ${result.records} 份桌靴历史，触发 ${result.tasks.length} 个模拟任务。`);
+      if ($("sound").checked) void beep();
+    } catch (error) { invalidate(); message(error.message, true); }
+  };
+  document.querySelectorAll('input[name="mode"], #streakLength, #stakes, #history').forEach(input => input.addEventListener("input", invalidate));
+  $("prev").onclick = () => { page--; renderPage(); };
+  $("next").onclick = () => { page++; renderPage(); };
+  $("import").onclick = () => $("file").click();
+  $("file").onchange = async () => {
+    const file = $("file").files[0];
+    if (!file) return;
+    try {
+      if (file.size > 1500000) throw new Error("文件过大，请限制在 1.5 MB 内。");
+      const text = await file.text();
+      $("history").value = text; invalidate(); message("历史已导入，请点击开始回放。");
+    } catch (error) { message(error.message, true); }
+    finally { $("file").value = ""; }
+  };
+  $("export").onclick = () => {
+    if (!result) return;
+    const url = URL.createObjectURL(new Blob([OfflineReplay.csv(result)], {type: "text/csv;charset=utf-8"}));
+    const link = document.createElement("a"); link.href = url; link.download = "四模式离线模拟.csv";
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+})();
+</script>
+</body>
+</html>

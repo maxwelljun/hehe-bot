@@ -11,9 +11,9 @@ internal sealed class MainForm : Form
     private readonly (StrategyPattern Pattern, CheckBox Box)[] _patterns =
     [
         (StrategyPattern.Streak, new() { Text = "连续同色", AutoSize = true }),
-        (StrategyPattern.SingleAlternation, new() { Text = "单口交替", AutoSize = true }),
-        (StrategyPattern.DoubleAlternation, new() { Text = "两口交替", AutoSize = true }),
-        (StrategyPattern.TripleAlternation, new() { Text = "三口交替", AutoSize = true })
+        (StrategyPattern.SingleAlternation, new() { Text = "单跳", AutoSize = true }),
+        (StrategyPattern.DoubleAlternation, new() { Text = "二排", AutoSize = true }),
+        (StrategyPattern.TripleAlternation, new() { Text = "三排", AutoSize = true })
     ];
     private readonly ComboBox _triggerSide = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
     private readonly NumericUpDown _streakLength = NumberBox(20);
@@ -206,6 +206,7 @@ internal sealed class MainForm : Form
         _tables.Columns.Add("shoe", "牌靴");
         _tables.Columns.Add("game", "局号");
         _tables.Columns.Add("run", "最新走势");
+        _tables.Columns["run"]!.FillWeight = 250;
         _tables.Columns.Add("chase", "追注任务");
         _tables.Columns.Add("remaining", "剩余秒");
     }

@@ -151,6 +151,19 @@ async function main() {
   assert.equal(rejectedFirst.errorCode, -96);
   assert.equal(rejectedFirst.errorMessage, "测试拒绝原因");
 
+  // An order the site never acked must not block the table once the round has moved on.
+  const unackedRequest = { ...request, orderKey: "strategy:19:8:13:1", tableId: 19, shoeSeq: 8, gameSeq: 13 };
+  secondCtrl.tableRoundInfoBean.gameSeq = 13;
+  assert.equal(context.window.__YAXIN_MONITOR__.submitBet(unackedRequest).submitted, true);
+  assert.match(context.window.__YAXIN_MONITOR__.submitBet({ ...unackedRequest, orderKey: "again" }).error, /等待网站确认/);
+  secondCtrl.tableRoundInfoBean.gameSeq = 14;
+  const nextRoundRequest = { ...unackedRequest, orderKey: "strategy:19:8:14:1", gameSeq: 14 };
+  assert.equal(context.window.__YAXIN_MONITOR__.submitBet(nextRoundRequest).submitted, true);
+  secondCtrl.setBetResponseMsg({ tableId: 19, gamblingNum: 13, errorCode: 0 });
+  assert.equal(context.window.__YAXIN_MONITOR__.poll().events.length, 0);
+  secondCtrl.setBetResponseMsg({ tableId: 19, gamblingNum: 14, errorCode: 0 });
+  assert.equal(context.window.__YAXIN_MONITOR__.poll().events[0].orderKey, nextRoundRequest.orderKey);
+
   context.window.GameManager.PlayerInfo.userId = null;
   assert.equal(context.window.__YAXIN_MONITOR__.poll().loggedIn, true);
   context.window.GameManager.IsInSocket = false;
