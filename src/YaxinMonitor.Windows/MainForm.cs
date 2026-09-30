@@ -421,36 +421,53 @@ internal sealed class MainForm : Form
         catch (Exception exception) { ShowError(exception.Message); }
     }
 
-    private void ReconcileClicked(object? sender, EventArgs args)
+    // 读取和处理订单都要等监控线程释放状态锁并写盘，放到后台执行，避免界面卡住。
+    private async void ReconcileClicked(object? sender, EventArgs args)
     {
+        _reconciling = true;
+        UpdateCommandState();
         try
         {
-            IReadOnlyList<ReconciliationOrderView> orders = _service.GetReconciliationOrders();
+            IReadOnlyList<ReconciliationOrderView> orders = await Task.Run(_service.GetReconciliationOrders);
             if (orders.Count == 0)
             {
-                MessageBox.Show("没有需要人工对账的订单。", "订单对账",
+                MessageBox.Show(this, "没有需要人工对账的订单。", "订单对账",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
 
+            int index = 0;
             foreach (ReconciliationOrderView order in orders)
             {
-                ManualOrderResolution? resolution = ShowReconciliationDialog(order, orders.Count);
+                ManualOrderResolution? resolution = ShowReconciliationDialog(this, order, ++index, orders.Count);
                 if (resolution is null) break;
-                _service.ResolveOrder(order.OrderKey, resolution.Value);
+                try
+                {
+                    await Task.Run(() => _service.ResolveOrder(order.OrderKey, resolution.Value));
+                }
+                catch (InvalidOperationException exception)
+                {
+                    // 打开对话框期间订单可能已被自动对账处理，跳过继续下一笔。
+                    AddLog($"订单 {order.OrderKey} 未处理：{exception.Message}");
+                }
             }
 
-            int remaining = _service.GetReconciliationOrders().Count;
+            int remaining = (await Task.Run(_service.GetReconciliationOrders)).Count;
             if (remaining == 0)
-                MessageBox.Show("待对账订单已全部处理。", "订单对账",
+                MessageBox.Show(this, "待对账订单已全部处理。", "订单对账",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             else
                 AddLog($"仍有 {remaining} 笔订单待对账。");
         }
         catch (Exception exception) { ShowError(exception.Message); }
+        finally
+        {
+            _reconciling = false;
+            if (!IsDisposed) UpdateCommandState();
+        }
     }
 
-    private static ManualOrderResolution? ShowReconciliationDialog(ReconciliationOrderView order, int total)
+    private static ManualOrderResolution? ShowReconciliationDialog(IWin32Window owner, ReconciliationOrderView order, int position, int total)
     {
         using var dialog = new Form
         {
@@ -468,7 +485,7 @@ internal sealed class MainForm : Form
             AutoSize = false,
             Location = new Point(18, 16),
             Size = new Size(584, 190),
-            Text = $"请先在网站订单记录中核对这笔订单，再选择处理结果。当前共有 {total} 笔待对账订单。\n\n" +
+            Text = $"请先在网站订单记录中核对这笔订单，再选择处理结果。第 {position} / {total} 笔待对账订单。\n\n" +
                 $"状态：{(order.Status == "SettlementPending" ? "待外部结算" : "状态不明")}\n" +
                 $"桌台：{order.TableId}\n方向：{SideText(order.Side)}\n金额：{order.Amount:0.##}\n档位：第 {order.Attempt} 档\n" +
                 $"创建时间：{order.CreatedAt.LocalDateTime:yyyy-MM-dd HH:mm:ss}\n订单键：{order.OrderKey}\n\n" +
@@ -486,7 +503,7 @@ internal sealed class MainForm : Form
         settled.Click += (_, _) => { result = ManualOrderResolution.ConfirmedSettled; dialog.DialogResult = DialogResult.OK; };
         dialog.Controls.AddRange([text, notPlaced, settled, cancel]);
         dialog.CancelButton = cancel;
-        return dialog.ShowDialog() == DialogResult.OK ? result : null;
+        return dialog.ShowDialog(owner) == DialogResult.OK ? result : null;
     }
 
     private YaxinSettings ReadSettings(bool requireLiveConfirmation)
@@ -550,6 +567,8 @@ internal sealed class MainForm : Form
             _log.Lines = _log.Lines[^800..];
     }
 
+    private bool _reconciling;
+
     private void UpdateCommandState()
     {
         bool running = _service.IsRunning;
@@ -561,6 +580,7 @@ internal sealed class MainForm : Form
         _update.Enabled = !_updating;
         _rollback.Enabled = !running && !_updating;
         _pause.Enabled = running && live;
+        _reconcile.Enabled = _service.PendingReconciliationCount > 0 && !_reconciling;
         _pause.Text = orderCommand;
         _trayOrders.Enabled = running && live;
         _trayOrders.Text = orderCommand;

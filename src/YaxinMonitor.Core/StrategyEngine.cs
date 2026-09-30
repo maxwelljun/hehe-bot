@@ -192,6 +192,24 @@ public sealed class StrategyEngine
         }
     }
 
+    /// <summary>
+    /// 移除已结束且超过保留时间的订单（完整记录已写入每日订单日志），防止状态文件无限增长、每次保存越来越慢。
+    /// 仍被追注引用或未结束的订单永远保留。返回是否有删除。
+    /// </summary>
+    public bool PruneOrders(DateTimeOffset now, TimeSpan keep, int maxFinished = 300)
+    {
+        var referenced = State.Tables.Values.Select(table => table.ActiveChase?.PendingOrderKey)
+            .Where(key => key is not null).ToHashSet();
+        OrderState[] finished = State.Orders.Values
+            .Where(order => (order.Status is "Settled" or "Rejected" or "SimulationUnresolved"
+                or "ManuallyConfirmedNotPlaced" or "ManuallyConfirmedSettled") && !referenced.Contains(order.OrderKey))
+            .OrderByDescending(order => order.UpdatedAt ?? order.CreatedAt).ToArray();
+        string[] stale = finished.Where((order, index) => index >= maxFinished || now - (order.UpdatedAt ?? order.CreatedAt) > keep)
+            .Select(order => order.OrderKey).ToArray();
+        foreach (string key in stale) State.Orders.Remove(key);
+        return stale.Length > 0;
+    }
+
     public decimal ReservedStake => State.Orders.Values
         .Where(order => order.Status is "Submitted" or "Accepted" or "Unknown" or "SettlementPending")
         .Sum(order => order.Amount);

@@ -87,6 +87,19 @@ var tests = new (string Name, Action Run)[]
         snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 3] };
         Equal(10m, Candidate(engine.Observe(snapshot, Now().AddMinutes(1))).Amount);
     }),
+    ("Pruning drops only old finished orders", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate first = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(first, Now()); engine.MarkRejected(first.OrderKey, -1, Now());
+        snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 3] };
+        BetCandidate second = Candidate(engine.Observe(snapshot, Now().AddMinutes(1)));
+        engine.MarkSubmitted(second, Now().AddMinutes(1)); engine.MarkUnknown(second.OrderKey, Now().AddMinutes(1));
+        False(engine.PruneOrders(Now().AddHours(1), TimeSpan.FromHours(24)));
+        True(engine.PruneOrders(Now().AddDays(2), TimeSpan.FromHours(24)));
+        False(engine.State.Orders.ContainsKey(first.OrderKey));
+        True(engine.State.Orders.ContainsKey(second.OrderKey));
+    }),
     ("Unknown order blocks automatic progress", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);

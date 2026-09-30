@@ -26,7 +26,10 @@ internal sealed class MonitorService : IAsyncDisposable
     private readonly Dictionary<string, long> _orderBridgeConnection = [];
     private readonly Dictionary<string, DateTimeOffset> _unknownRoundPassedAt = [];
     private long _bridgeConnection;
+    // 已结束订单在状态文件中只保留这么久，完整记录在每日订单日志里。
+    private static readonly TimeSpan FinishedOrderRetention = TimeSpan.FromHours(24);
     private readonly object _engineLock = new();
+    private volatile int _pendingReconciliation;
     private readonly object _settingsLock = new();
     private YaxinSettings _settings;
     private StrategyEngine _engine;
@@ -48,12 +51,26 @@ internal sealed class MonitorService : IAsyncDisposable
         _settings = settings;
         EngineState state = store.LoadState();
         _engine = new StrategyEngine(state, settings.Strategy, settings.MinimumRemainingMilliseconds);
+        if (_engine.PruneOrders(DateTimeOffset.Now, FinishedOrderRetention)) store.SaveState(state);
+        _pendingReconciliation = CountReconciliationOrders();
         if (state.Orders.Values.All(order => order.Status != "Unknown") && settings.Mode != MonitorMode.Live)
             _ordersPaused = false;
     }
 
     public bool IsRunning => _worker is { IsCompleted: false };
     public bool OrdersPaused => _ordersPaused;
+    /// <summary>需要人工对账的订单数，界面据此启用“订单对账”按钮；读取不加锁。</summary>
+    public int PendingReconciliationCount => _pendingReconciliation;
+
+    // 调用方须持有 _engineLock。每次状态变化都经这里写盘，同时刷新待对账数量。
+    private void Persist()
+    {
+        _pendingReconciliation = CountReconciliationOrders();
+        _store.SaveState(_engine.State);
+    }
+
+    private int CountReconciliationOrders() =>
+        _engine.State.Orders.Values.Count(order => order.Status is "Unknown" or "SettlementPending");
 
     public IReadOnlyList<ReconciliationOrderView> GetReconciliationOrders()
     {
@@ -76,7 +93,7 @@ internal sealed class MonitorService : IAsyncDisposable
             order = _engine.State.Orders[orderKey];
             tableCanResume = !_engine.State.Orders.Values.Any(candidate =>
                 candidate.TableId == order.TableId && candidate.Status == "Unknown");
-            _store.SaveState(_engine.State);
+            Persist();
             _store.AppendOrder(order);
         }
         bool tableResumed = tableCanResume && _quarantinedTables.TryRemove(order.TableId, out _);
@@ -92,7 +109,7 @@ internal sealed class MonitorService : IAsyncDisposable
         lock (_engineLock)
         {
             _engine = new StrategyEngine(_engine.State, settings.Strategy, settings.MinimumRemainingMilliseconds);
-            _store.SaveState(_engine.State);
+            Persist();
         }
         lock (_settingsLock) _settings = settings;
         if (settings.Mode == MonitorMode.Live) _ordersPaused = true;
@@ -106,7 +123,7 @@ internal sealed class MonitorService : IAsyncDisposable
         lock (_engineLock)
         {
             _engine = new StrategyEngine(new EngineState(), settings.Strategy, settings.MinimumRemainingMilliseconds);
-            _store.SaveState(_engine.State);
+            Persist();
         }
         lock (_settingsLock) _settings = settings;
         _candidates.Clear();
@@ -291,7 +308,7 @@ internal sealed class MonitorService : IAsyncDisposable
                 {
                     _engine.MarkAccepted(item.OrderKey, DateTimeOffset.Now);
                     _quarantinedTables.TryRemove(order.TableId, out _);
-                    _store.SaveState(_engine.State);
+                    Persist();
                     _store.AppendOrder(order);
                     WriteLog($"下注已受理：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，第 {order.Attempt} 档。");
                     if (lateConfirmation) WriteLog($"桌台 {order.TableId} 的迟到确认已恢复为等待结算状态。");
@@ -301,7 +318,7 @@ internal sealed class MonitorService : IAsyncDisposable
                 {
                     _engine.MarkRejected(item.OrderKey, item.ErrorCode, DateTimeOffset.Now);
                     _quarantinedTables.TryRemove(order.TableId, out _);
-                    _store.SaveState(_engine.State);
+                    Persist();
                     _store.AppendOrder(order);
                     string detail = string.IsNullOrWhiteSpace(item.ErrorMessage) ? "" : $"：{item.ErrorMessage}";
                     WriteLog($"下注被拒绝：桌台 {order.TableId}，错误码 {item.ErrorCode}{detail}。");
@@ -361,7 +378,7 @@ internal sealed class MonitorService : IAsyncDisposable
                     continue;
                 }
                 _unknownRoundPassedAt.Remove(order.OrderKey);
-                _store.SaveState(_engine.State);
+                Persist();
                 _store.AppendOrder(order);
                 WriteLog($"订单自动对账：桌台 {order.TableId}，{SideText(order.Side)} {order.Amount:0.##}，该局已开奖但网站没有推送本单结算，判定未下注，追注按原档继续。");
                 if (!_engine.State.Orders.Values.Any(value => value.TableId == order.TableId && value.Status == "Unknown"))
@@ -405,7 +422,9 @@ internal sealed class MonitorService : IAsyncDisposable
                 && _engine.State.Orders.TryGetValue(deferred.OrderKey, out OrderState? deferredOrder))
                 _store.AppendOrder(deferredOrder);
         }
-        if (changed) _store.SaveState(_engine.State);
+        if (!changed) return;
+        _engine.PruneOrders(DateTimeOffset.Now, FinishedOrderRetention);
+        Persist();
     }
 
     private async Task DispatchOneAsync(SiteRuntimeAdapter adapter, BridgePoll poll, YaxinSettings settings, CancellationToken cancellationToken)
@@ -432,7 +451,7 @@ internal sealed class MonitorService : IAsyncDisposable
                 }
             if (validationError is not null)
                 _engine.MarkRejected(candidate.OrderKey, -9001, DateTimeOffset.Now);
-            _store.SaveState(_engine.State);
+            Persist();
         }
         if (validationError is not null)
         {
@@ -454,7 +473,7 @@ internal sealed class MonitorService : IAsyncDisposable
             lock (_engineLock)
             {
                 _engine.MarkRejected(candidate.OrderKey, -9000, DateTimeOffset.Now);
-                _store.SaveState(_engine.State);
+                Persist();
             }
             WriteLog("桥接未发送：" + result.Error);
         }
@@ -489,7 +508,7 @@ internal sealed class MonitorService : IAsyncDisposable
                 && DateTimeOffset.Now - (order.UpdatedAt ?? order.CreatedAt) > TimeSpan.FromSeconds(8));
             if (timedOut is null) return;
             _engine.MarkUnknown(timedOut.OrderKey, DateTimeOffset.Now);
-            _store.SaveState(_engine.State);
+            Persist();
             _store.AppendOrder(timedOut);
         }
         if (_quarantinedTables.TryAdd(timedOut.TableId, "订单确认超时，状态不明"))
@@ -505,7 +524,7 @@ internal sealed class MonitorService : IAsyncDisposable
             {
                 _engine.MarkUnknown(chase.PendingOrderKey, DateTimeOffset.Now);
                 OrderState order = _engine.State.Orders[chase.PendingOrderKey];
-                _store.SaveState(_engine.State);
+                Persist();
                 _store.AppendOrder(order);
             }
         }
@@ -536,6 +555,10 @@ internal sealed class MonitorService : IAsyncDisposable
         decimal reservedStake;
         lock (_engineLock)
         {
+            // 有在途订单（已提交、未结算或状态不明）的桌台排在最前，其余仍按接近触发程度排序。
+            var inFlight = _engine.State.Orders.Values
+                .Where(order => order.Status is "Submitted" or "Accepted" or "Unknown" or "SettlementPending")
+                .Select(order => order.TableId).ToHashSet();
             rows = poll.Tables.Select(table =>
             {
                 IReadOnlyList<ResultRun> runs = PatternDetector.RecentRuns(table.History);
@@ -545,7 +568,7 @@ internal sealed class MonitorService : IAsyncDisposable
                 (string latest, double closeness) = DescribeTrend(runs, settings.Strategy);
                 return new TableViewState(table.TableId, table.TableName, table.State, table.ShoeSeq, table.GameSeq,
                     latest, runs.Count == 0 ? 0 : runs[0].Count, chase, table.RemainingMilliseconds / 1000, closeness);
-            }).OrderByDescending(row => row.Closeness).ThenByDescending(row => row.LatestRunCount)
+            }).OrderByDescending(row => inFlight.Contains(row.TableId)).ThenByDescending(row => row.Closeness).ThenByDescending(row => row.LatestRunCount)
               .ThenBy(row => row.TableId).ToArray();
             dailyStake = _engine.State.DailyAcceptedStake;
             reservedStake = _engine.ReservedStake;
