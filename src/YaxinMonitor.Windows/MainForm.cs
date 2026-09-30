@@ -36,7 +36,8 @@ internal sealed class MainForm : Form
     private UpdateInfo? _availableUpdate;
     private bool _updating;
     private readonly Label _connection = new() { AutoSize = true, Text = "未连接", Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold) };
-    private readonly Label _summary = new() { AutoSize = true, Text = "桌台 0 · 余额 0 · 今日 0 · 在途 0" };
+    private readonly Label _summary = new() { AutoSize = true, Text = "桌台 0 · 余额 0 · 本地今日 0 · 在途 0" };
+    private readonly Label _turnover = new() { AutoSize = true, Margin = new Padding(3, 6, 3, 0), Text = "网站码量  等待网站数据..." };
     private readonly DataGridView _tables = new();
     private readonly TextBox _log = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Dock = DockStyle.Fill };
     private readonly ToolTip _toolTips = new();
@@ -296,6 +297,8 @@ internal sealed class MainForm : Form
         status.Controls.Add(dataButton);
         status.Controls.Add(_update);
         status.Controls.Add(_rollback);
+        status.SetFlowBreak(_rollback, true);
+        status.Controls.Add(_turnover);
 
         var logGroup = new GroupBox { Text = "运行记录", Dock = DockStyle.Fill, Padding = new Padding(8) };
         logGroup.Controls.Add(_log);
@@ -545,9 +548,23 @@ internal sealed class MainForm : Form
         return settings;
     }
 
+    // 与网站投注记录一致的简写：≥1000 显示为 K（最多三位小数）。
+    private static string KNumber(decimal value) =>
+        Math.Abs(value) >= 1000 ? (value / 1000).ToString("0.###") + "K" : value.ToString("0.##");
+
+    private static string DescribeTurnover(BridgeTurnover? turnover)
+    {
+        static string Part(string label, TurnoverSummary? x) => x is null ? $"{label} 暂无数据"
+            : $"{label}  投注：{KNumber(x.Bet)}  洗码量：{KNumber(x.Valid)}  输赢：{KNumber(x.WinLost)}  （{x.Count} 笔）";
+        if (turnover is null) return "网站码量  等待网站数据...";
+        string text = $"网站码量（今日 12:00 起 / 本周一 12:00 起）\n{Part("今日", turnover.Today)}\n{Part("本周", turnover.Week)}";
+        return string.IsNullOrEmpty(turnover.Error) ? text : text + "\n查询失败：" + turnover.Error;
+    }
+
     private void ApplySnapshot(ServiceSnapshot snapshot)
     {
-        _summary.Text = $"桌台 {snapshot.Tables.Count} · 余额 {snapshot.Balance:0.##} · 今日 {snapshot.DailyStake:0.##} · 在途 {snapshot.ReservedStake:0.##} · {snapshot.Bundle}";
+        _summary.Text = $"桌台 {snapshot.Tables.Count} · 余额 {snapshot.Balance:0.##} · 本地今日 {snapshot.DailyStake:0.##} · 在途 {snapshot.ReservedStake:0.##} · {snapshot.Bundle}";
+        _turnover.Text = DescribeTurnover(snapshot.SiteTurnover);
         int firstDisplayedIndex = _tables.FirstDisplayedScrollingRowIndex;
         _tables.SuspendLayout();
         _tables.Rows.Clear();

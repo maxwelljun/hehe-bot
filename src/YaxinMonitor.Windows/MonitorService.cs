@@ -12,7 +12,7 @@ internal sealed record TableViewState(
 internal sealed record ServiceSnapshot(
     bool Connected, bool LoggedIn, string Bundle, decimal Balance,
     decimal DailyStake, decimal ReservedStake, bool OrdersPaused,
-    IReadOnlyList<TableViewState> Tables);
+    IReadOnlyList<TableViewState> Tables, BridgeTurnover? SiteTurnover = null);
 
 internal sealed record ReconciliationOrderView(
     string OrderKey, long TableId, BetSide Side, decimal Amount, int Attempt, DateTimeOffset CreatedAt, string Status);
@@ -611,7 +611,7 @@ internal sealed class MonitorService : IAsyncDisposable
             reservedStake = _engine.ReservedStake;
         }
         SnapshotChanged?.Invoke(new ServiceSnapshot(true, poll.Ready, poll.Bundle, poll.Balance,
-            dailyStake, reservedStake, _ordersPaused, rows));
+            dailyStake, reservedStake, _ordersPaused, rows, _siteTurnover));
     }
 
     private void WriteLog(string message)

@@ -83,6 +83,8 @@
     .actions .spacer { flex: 1 1 24px; }
     .statusbar { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; margin-top: 10px; padding: 9px 14px; color: var(--muted); }
     .metric strong { color: var(--text); font-weight: 650; }
+    #turnover { flex-direction: column; align-items: flex-start; }
+    .turnover-row { display: flex; flex-wrap: wrap; gap: 4px 18px; }
     .workspace { margin-top: 10px; overflow: hidden; }
     .section-head { display: flex; justify-content: space-between; align-items: center; min-height: 42px; padding: 0 14px; border-bottom: 1px solid var(--line); }
     h2 { margin: 0; font-size: 14px; }
@@ -168,10 +170,11 @@
     <section class="statusbar">
       <span class="metric">桌台 <strong id="tableCount">0</strong></span>
       <span class="metric">余额 <strong id="balance">0</strong></span>
-      <span class="metric">今日 <strong id="dailyStake">0</strong></span>
+      <span class="metric">本地今日 <strong id="dailyStake">0</strong></span>
       <span class="metric">在途 <strong id="reservedStake">0</strong></span>
       <span class="metric">前端 <strong id="bundle">-</strong></span>
     </section>
+    <section class="statusbar" id="turnover"><span class="metric">网站码量 等待网站数据...</span></section>
 
     <section class="workspace">
       <div class="section-head"><h2>全桌走势</h2><span class="count" id="isolated"></span></div>
@@ -268,6 +271,20 @@
       if (className) cell.className = className;
     }
 
+    // 与网站投注记录一致的简写：≥1000 显示为 K（最多三位小数）。
+    function kNum(v) {
+      const n = Number(v || 0);
+      return Math.abs(n) >= 1000 ? +(n / 1000).toFixed(3) + 'K' : String(+n.toFixed(2));
+    }
+    function renderTurnover(t) {
+      const box = $('turnover');
+      const part = (label, x) => '<div class="turnover-row">' + (x
+        ? `<span class="metric"><strong>${label}</strong></span><span class="metric">投注 <strong>${kNum(x.bet)}</strong></span><span class="metric">洗码量 <strong>${kNum(x.valid)}</strong></span><span class="metric">输赢 <strong>${kNum(x.winLost)}</strong></span><span class="metric">${x.count} 笔</span>`
+        : `<span class="metric"><strong>${label}</strong> 暂无数据</span>`) + '</div>';
+      if (!t) { box.innerHTML = '<span class="metric">网站码量 等待网站数据...</span>'; return; }
+      box.innerHTML = '<span class="metric">网站码量（今日 12:00 起 / 本周一 12:00 起）</span>' + part('今日', t.today) + part('本周', t.week)
+        + (t.error ? `<span class="metric" style="color:#dc2626">查询失败：${String(t.error).replace(/[<>&]/g, '')}</span>` : '');
+    }
     function renderTables(tables) {
       const body = $('tables');
       body.replaceChildren();
@@ -339,6 +356,7 @@
       $('dailyStake').textContent = snapshot?.dailyStake ?? 0;
       $('reservedStake').textContent = snapshot?.reservedStake ?? 0;
       $('bundle').textContent = snapshot?.bundle || '-';
+      renderTurnover(snapshot?.siteTurnover);
       $('isolated').textContent = state.reconciliationOrders.length ? `待对账订单 ${state.reconciliationOrders.length}` : '';
       renderTables(tables);
 
