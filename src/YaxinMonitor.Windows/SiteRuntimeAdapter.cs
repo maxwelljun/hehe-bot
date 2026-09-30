@@ -33,6 +33,25 @@ internal sealed record BridgePoll
     public decimal Balance { get; init; }
     public TableSnapshot[] Tables { get; init; } = [];
     public BridgeEvent[] Events { get; init; } = [];
+    public BridgeTurnover? Turnover { get; init; }
+}
+
+internal sealed record TurnoverSummary
+{
+    public string Start { get; init; } = "";
+    public string End { get; init; } = "";
+    public int Count { get; init; }
+    public decimal Bet { get; init; }
+    public decimal Valid { get; init; }
+    public decimal WinLost { get; init; }
+    public long UpdatedAt { get; init; }
+}
+
+internal sealed record BridgeTurnover
+{
+    public TurnoverSummary? Today { get; init; }
+    public TurnoverSummary? Week { get; init; }
+    public string Error { get; init; } = "";
 }
 
 internal sealed record BridgeSubmitResult
@@ -100,6 +119,9 @@ internal sealed class SiteRuntimeAdapter : IAsyncDisposable
 
     public Task<BridgePoll> PollAsync(CancellationToken cancellationToken) =>
         EvaluateAsync<BridgePoll>("window.__YAXIN_MONITOR__.poll()", cancellationToken);
+
+    public Task<JsonElement> RequestTurnoverAsync(IEnumerable<object> ranges, CancellationToken cancellationToken) =>
+        EvaluateRawAsync($"window.__YAXIN_MONITOR__.requestTurnover({JsonSerializer.Serialize(ranges)})", cancellationToken);
 
     public Task<BridgeSubmitResult> SubmitAsync(BetCandidate candidate, int minimumRemainingMilliseconds, CancellationToken cancellationToken)
     {

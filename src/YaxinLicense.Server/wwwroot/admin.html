@@ -36,6 +36,9 @@
   .tag.ok { background:#dcfce7; color:#166534; }
   .tag.warn { background:#fef3c7; color:#92400e; }
   .muted { color:var(--muted); font-size:12px; }
+  .turnover { white-space:nowrap; line-height:1.7; }
+  .turnover em { font-style:normal; color:var(--muted); margin-right:4px; }
+  .turnover span { margin-right:12px; }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   #login { max-width:340px; margin:12vh auto; }
   #login input { width:100%; margin:10px 0; }
@@ -79,7 +82,7 @@
       <table>
         <thead><tr>
           <th>状态</th><th>机器</th><th>用户</th><th>系统</th><th>IP</th><th>版本</th>
-          <th>模式</th><th>余额</th><th>今日下注</th><th>在途</th><th>桌台/追注</th><th>最后上报</th><th>授权</th><th></th>
+          <th>模式</th><th>余额</th><th>网站码量（今日 / 本周）</th><th>本地今日</th><th>在途</th><th>桌台/追注</th><th>最后上报</th><th>授权</th><th></th>
         </tr></thead>
         <tbody id="machineRows"></tbody>
       </table>
@@ -246,6 +249,31 @@ async function uploadUpdate() {
   finally { $('uploadUpdate').disabled = false; }
 }
 
+// 与网站投注记录一致的简写：≥1000 显示为 K（最多三位小数）。
+function kNum(v) {
+  if (v == null || isNaN(v)) return '—';
+  const n = Number(v), a = Math.abs(n);
+  return a >= 1000 ? +(n / 1000).toFixed(3) + 'K' : String(+n.toFixed(2));
+}
+
+function sumTurnover(list, key) {
+  const parts = list.map(m => m.telemetry?.siteTurnover?.[key]).filter(Boolean);
+  if (!parts.length) return null;
+  return parts.reduce((s, x) => ({ bet: s.bet + x.bet, valid: s.valid + x.valid, winLost: s.winLost + x.winLost, count: s.count + x.count }),
+    { bet: 0, valid: 0, winLost: 0, count: 0 });
+}
+
+function turnoverLine(label, x) {
+  if (!x) return `<div><em>${label}</em><span class="muted">暂无数据</span></div>`;
+  return `<div><em>${label}</em><span>投注：${kNum(x.bet)}</span><span>洗码量：${kNum(x.valid)}</span><span>输赢：${kNum(x.winLost)}</span><span class="muted">${x.count} 笔</span></div>`;
+}
+
+function turnoverCell(t) {
+  const st = t.siteTurnover;
+  if (!st) return '<span class="muted">—</span>';
+  return `<div class="turnover">${turnoverLine('今日', st.today)}${turnoverLine('本周', st.week)}${st.error ? `<div class="muted" style="color:var(--bad)">${esc(st.error)}</div>` : ''}</div>`;
+}
+
 function isOnline(m) {
   return m.lastSeen && (new Date(data.now) - new Date(m.lastSeen)) / 1000 <= data.onlineSeconds;
 }
@@ -259,10 +287,11 @@ function renderStats() {
     ['在线机器', online.length + ' / ' + data.machines.length],
     ['监控运行中', running.length],
     ['在线余额合计', money(balance)],
-    ['在线今日下注合计', money(stake)],
+    ['在线今日下注合计（本地）', money(stake)],
     ['用户', data.users.length],
     ['禁用机器', data.machines.filter(m => !m.enabled).length]
-  ].map(([k, v]) => `<div class="stat"><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join('');
+  ].map(([k, v]) => `<div class="stat"><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join('')
+    + `<div class="stat turnover"><span>在线机器网站码量合计（今日 12:00 起 / 本周一 12:00 起）</span>${turnoverLine('今日', sumTurnover(online, 'today'))}${turnoverLine('本周', sumTurnover(online, 'week'))}</div>`;
 }
 
 function renderMachines() {
@@ -281,6 +310,7 @@ function renderMachines() {
       <td>${esc(m.version)}</td>
       <td>${esc(modeName[t.mode] || t.mode || '—')}</td>
       <td>${money(t.balance)}</td>
+      <td>${turnoverCell(t)}</td>
       <td>${money(t.dailyStake)}${t.dailyStakeLimit ? `<div class="muted">上限 ${money(t.dailyStakeLimit)}</div>` : ''}</td>
       <td>${money(t.reservedStake)}</td>
       <td>${t.tables ?? '—'} / ${t.chasing ?? '—'}</td>
@@ -292,7 +322,7 @@ function renderMachines() {
         <button class="small" data-act="note" data-id="${esc(m.machineId)}">备注</button>
         <button class="small danger" data-act="delete" data-id="${esc(m.machineId)}">删除</button>
       </td></tr>`;
-  }).join('') || '<tr><td colspan="14" class="muted">暂无机器。用户在工具里登录后会自动出现在这里。</td></tr>';
+  }).join('') || '<tr><td colspan="15" class="muted">暂无机器。用户在工具里登录后会自动出现在这里。</td></tr>';
 }
 
 function renderUsers() {
@@ -337,7 +367,8 @@ async function openDetail(id) {
     ['网站连接', t.connected ? '已连接' : '未连接'], ['网站登录', t.siteLoggedIn ? '已登录' : '未登录'],
     ['状态', t.status], ['策略', t.strategy], ['每日上限 / 在途上限', `${money(t.dailyStakeLimit)} / ${money(t.maxReservedStake)}`]
   ];
-  $('detailInfo').innerHTML = rows.map(([k, v]) => `<div>${esc(k)}</div><div>${esc(v ?? '—')}</div>`).join('');
+  $('detailInfo').innerHTML = rows.map(([k, v]) => `<div>${esc(k)}</div><div>${esc(v ?? '—')}</div>`).join('')
+    + `<div>网站码量</div><div>${turnoverCell(t)}</div>`;
   $('detail').classList.add('open');
   const [logs, telemetry] = await Promise.all([
     api('/machines/logs?limit=1000&machineId=' + encodeURIComponent(id)),

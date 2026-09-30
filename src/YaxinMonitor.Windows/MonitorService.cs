@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text.Json;
 using YaxinMonitor.Core;
 
 namespace YaxinMonitor.Windows;
@@ -40,6 +41,9 @@ internal sealed class MonitorService : IAsyncDisposable
     private long _nextSubmitTimestamp;
     private string? _reportedBundle;
     private string? _reportedCompatibilityIssue;
+    private static readonly TimeSpan TodayTurnoverInterval = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan WeekTurnoverInterval = TimeSpan.FromMinutes(5);
+    private volatile BridgeTurnover? _siteTurnover;
 
     public event Action<string>? LogReceived;
     public event Action<string>? StatusChanged;
@@ -58,6 +62,9 @@ internal sealed class MonitorService : IAsyncDisposable
     }
 
     public bool IsRunning => _worker is { IsCompleted: false };
+
+    /// <summary>网站投注记录接口给出的今日 / 本周汇总，不受本地状态重置影响。</summary>
+    public BridgeTurnover? SiteTurnover => _siteTurnover;
     public bool OrdersPaused => _ordersPaused;
     /// <summary>需要人工对账的订单数，界面据此启用“订单对账”按钮；读取不加锁。</summary>
     public int PendingReconciliationCount => _pendingReconciliation;
@@ -213,9 +220,12 @@ internal sealed class MonitorService : IAsyncDisposable
 
     private async Task PollLoopAsync(SiteRuntimeAdapter adapter, YaxinSettings settings, CancellationToken cancellationToken)
     {
+        var turnoverClock = new TurnoverClock();
         while (!cancellationToken.IsCancellationRequested)
         {
             BridgePoll poll = await adapter.PollAsync(cancellationToken).ConfigureAwait(false);
+            if (poll.Turnover is not null) _siteTurnover = poll.Turnover;
+            if (poll.LoggedIn) await RequestTurnoverAsync(adapter, turnoverClock, cancellationToken).ConfigureAwait(false);
             HandleBridgeEvents(poll.Events, poll.Tables, settings);
             ResolveUnplacedUnknownOrders(poll);
             QuarantineUnknownTables();
@@ -287,6 +297,33 @@ internal sealed class MonitorService : IAsyncDisposable
             PublishSnapshot(poll, settings);
             await Task.Delay(500, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private sealed class TurnoverClock
+    {
+        public DateTimeOffset Today = DateTimeOffset.MinValue;
+        public DateTimeOffset Week = DateTimeOffset.MinValue;
+    }
+
+    private static async Task RequestTurnoverAsync(SiteRuntimeAdapter adapter, TurnoverClock clock, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = DateTimeOffset.Now;
+        if (now - clock.Today < TodayTurnoverInterval) return;
+        DateOnly day = SiteCalendar.BusinessDate(now);
+        string end = SiteCalendar.Format(day.AddDays(1));
+        var ranges = new List<object> { new { key = "today", start = SiteCalendar.Format(day), end } };
+        bool week = now - clock.Week >= WeekTurnoverInterval;
+        if (week) ranges.Add(new { key = "week", start = SiteCalendar.Format(SiteCalendar.WeekStart(day)), end });
+        try
+        {
+            JsonElement result = await adapter.RequestTurnoverAsync(ranges, cancellationToken).ConfigureAwait(false);
+            if (result.ValueKind != JsonValueKind.Object || !result.TryGetProperty("started", out JsonElement started) || !started.GetBoolean())
+                return;
+            clock.Today = now;
+            if (week) clock.Week = now;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (InvalidOperationException) { clock.Today = now; }
     }
 
     private void HandleBridgeEvents(IEnumerable<BridgeEvent> events, IReadOnlyList<TableSnapshot> tables, YaxinSettings settings)

@@ -281,6 +281,7 @@ internal sealed class LicenseClient : IAsyncDisposable
             bundle = snapshot?.Bundle,
             balance = snapshot?.Balance,
             dailyStake = snapshot?.DailyStake,
+            siteTurnover = running ? service?.SiteTurnover : null,
             reservedStake = snapshot?.ReservedStake,
             tables = snapshot?.Tables.Count ?? 0,
             chasing = chasing.Length,

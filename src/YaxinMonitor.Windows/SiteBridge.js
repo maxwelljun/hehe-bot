@@ -167,6 +167,57 @@
     };
   }
 
+  // 网站投注记录接口（与网页"投注记录"同源），只取汇总：码量、洗码量、输赢。
+  // 接口限制调用频率，多个区间之间间隔几秒串行查询。
+  const turnover = { today: null, week: null, error: "" };
+  let turnoverBusy = false;
+
+  function sumAttribute(xml, name) {
+    const match = new RegExp(name + '="([^"]*)"').exec(xml);
+    return match ? finite(match[1]) : null;
+  }
+
+  async function fetchTurnover(range) {
+    const playerInfo = gameManager.PlayerInfo;
+    if (!playerInfo || !playerInfo.userId) throw new Error("网站尚未登录");
+    let systemInfo = null;
+    try { systemInfo = window.System.get("chunks:///_virtual/MCenter.ts").MCenter.systemInfo; } catch (_) { }
+    const host = systemInfo && systemInfo.HTTP_HOST || location.origin;
+    const query = new URLSearchParams({
+      userId: String(playerInfo.userId), name: String(playerInfo.platformName || ""), pageIndex: "1", pageSize: "1",
+      startTime: range.start, endTime: range.end, t: String(Date.now()), queryType: "1"
+    });
+    const headers = systemInfo && systemInfo.ApiToken ? { apiUserToken: systemInfo.ApiToken } : {};
+    const response = await fetch(host + "/client/ClientbettingInfo.jsp?" + query, { headers, cache: "no-store" });
+    const text = await response.text();
+    if (!/<success>0<\/success>/.test(text)) {
+      let message = text.slice(0, 120);
+      try { message = JSON.parse(text).message || message; } catch (_) { }
+      throw new Error("投注记录查询失败：" + message);
+    }
+    const count = /<total>(\d+)<\/total>/.exec(text);
+    return {
+      start: range.start, end: range.end, count: count ? Number(count[1]) : 0,
+      bet: sumAttribute(text, "SUM_BETAMOUNT") || 0, valid: sumAttribute(text, "SUM_COMMAMOUNT") || 0,
+      winLost: sumAttribute(text, "SUM_WINLOST") || 0, updatedAt: Date.now()
+    };
+  }
+
+  async function refreshTurnover(ranges) {
+    try {
+      for (let i = 0; i < ranges.length; i++) {
+        if (i > 0) await new Promise(resolve => setTimeout(resolve, 6000));
+        const range = ranges[i];
+        turnover[range.key] = await fetchTurnover(range);
+      }
+      turnover.error = "";
+    } catch (error) {
+      turnover.error = String(error && error.message || error);
+    } finally {
+      turnoverBusy = false;
+    }
+  }
+
   const bridge = {
     info() {
       return { ok: true, bridgeVersion: 3, sessionId, bundle: bundle.split("/").pop().split("?")[0] };
@@ -192,8 +243,23 @@
         bundle: bundle.split("/").pop().split("?")[0],
         balance: finite(playerInfo && playerInfo.sumAmount) || 0,
         tables,
-        events: events.splice(0, events.length)
+        events: events.splice(0, events.length),
+        turnover: { today: turnover.today, week: turnover.week, error: turnover.error }
       };
+    },
+    // 只触发后台查询并立即返回，结果在后续 poll() 的 turnover 里。
+    requestTurnover(ranges) {
+      if (turnoverBusy) return { started: false };
+      const valid = Array.from(ranges || []).filter(range => range && (range.key === "today" || range.key === "week")
+        && /^\d{4}-\d{1,2}-\d{1,2}$/.test(range.start) && /^\d{4}-\d{1,2}-\d{1,2}$/.test(range.end));
+      if (valid.length === 0) return { started: false };
+      for (const range of valid) {
+        const current = turnover[range.key];
+        if (current && (current.start !== range.start || current.end !== range.end)) turnover[range.key] = null;
+      }
+      turnoverBusy = true;
+      refreshTurnover(valid);
+      return { started: true };
     },
     submitBet(request) {
       if (!request) return { submitted: false, error: "订单参数为空。" };

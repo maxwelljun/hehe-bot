@@ -4,7 +4,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>YaxinMonitor</AssemblyName>
     <RootNamespace>YaxinMonitor.Mac</RootNamespace>
-    <Version>1.6.2</Version>
+    <Version>1.6.3</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../YaxinMonitor.Core/YaxinMonitor.Core.csproj" />

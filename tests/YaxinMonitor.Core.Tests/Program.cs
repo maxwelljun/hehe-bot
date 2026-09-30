@@ -100,6 +100,17 @@ var tests = new (string Name, Action Run)[]
         False(engine.State.Orders.ContainsKey(first.OrderKey));
         True(engine.State.Orders.ContainsKey(second.OrderKey));
     }),
+    ("Site business day starts at noon Beijing time", () =>
+    {
+        var beijing = TimeSpan.FromHours(8);
+        Equal(new DateOnly(2026, 9, 29), SiteCalendar.BusinessDate(new DateTimeOffset(2026, 9, 30, 11, 59, 0, beijing)));
+        Equal(new DateOnly(2026, 9, 30), SiteCalendar.BusinessDate(new DateTimeOffset(2026, 9, 30, 12, 0, 0, beijing)));
+        Equal(new DateOnly(2026, 9, 30), SiteCalendar.BusinessDate(new DateTimeOffset(2026, 9, 30, 4, 30, 0, TimeSpan.Zero)));
+        Equal(new DateOnly(2026, 9, 28), SiteCalendar.WeekStart(new DateOnly(2026, 9, 30)));
+        Equal(new DateOnly(2026, 9, 28), SiteCalendar.WeekStart(new DateOnly(2026, 10, 4)));
+        Equal(new DateOnly(2026, 9, 28), SiteCalendar.WeekStart(new DateOnly(2026, 9, 28)));
+        Equal("2026-9-1", SiteCalendar.Format(new DateOnly(2026, 9, 1)));
+    }),
     ("Unknown order blocks automatic progress", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
