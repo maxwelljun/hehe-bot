@@ -180,6 +180,12 @@ public sealed class LicenseDb(string path)
         return enabled is null ? null : new MachineRow(machineId, Convert.ToInt64(enabled) != 0);
     }
 
+    public string? MachineOwner(string machineId)
+    {
+        using var connection = Open();
+        return Scalar(connection, "SELECT username FROM machines WHERE machine_id=$id", ("$id", machineId)) as string;
+    }
+
     public void UpdateMachine(string machineId, bool? enabled, string? note) => Write(connection =>
     {
         if (Scalar(connection, "SELECT 1 FROM machines WHERE machine_id=$id", ("$id", machineId)) is null)
@@ -196,13 +202,14 @@ public sealed class LicenseDb(string path)
             Execute(connection, $"DELETE FROM {table} WHERE machine_id=$id", ("$id", machineId));
     });
 
-    public List<object> ListMachines()
+    public List<object> ListMachines(string? username = null)
     {
         using var connection = Open();
-        using var command = Command(connection, """
+        using var command = Command(connection, $"""
             SELECT machine_id,username,name,os,info,ip,version,enabled,note,created_at,last_login,last_seen,telemetry
-            FROM machines ORDER BY last_seen DESC
+            FROM machines {(username is null ? "" : "WHERE username=$u COLLATE NOCASE")} ORDER BY last_seen DESC
             """);
+        if (username is not null) command.Parameters.AddWithValue("$u", username);
         using var reader = command.ExecuteReader();
         var result = new List<object>();
         while (reader.Read())

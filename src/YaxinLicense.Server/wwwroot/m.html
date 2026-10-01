@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#172027">
+  <title>亚信监控 · 手机</title>
+  <style>
+    :root {
+      --bg: #f3f5f6; --surface: #fff; --line: #d9dee2; --text: #172027; --muted: #66727a;
+      --green: #17734b; --red: #a33a32; --amber: #9a6414; --blue: #23658a;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 15px -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif; }
+    header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px; min-height: 50px; padding: env(safe-area-inset-top) 14px 0; background: #172027; color: #fff; }
+    header h1 { flex: 1; margin: 0; font-size: 16px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    header button { height: 32px; padding: 0 10px; border: 1px solid #4a5963; border-radius: 6px; background: transparent; color: #fff; font: inherit; font-size: 13px; }
+    main { padding: 12px 12px calc(24px + env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+    .machine { display: block; width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+    .row { display: flex; align-items: center; gap: 8px; }
+    .row .grow { flex: 1; min-width: 0; }
+    .name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: #9aa5ac; }
+    .dot.on { background: #38b978; }
+    .dot.warn { background: #d99a2b; }
+    .tag { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; background: #eef1f2; color: var(--muted); }
+    .tag.live { background: #fbe9e7; color: var(--red); }
+    .tag.run { background: #e5f4ec; color: var(--green); }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 12px; margin-top: 8px; }
+    .grid div { min-width: 0; }
+    .grid strong { display: block; font-size: 16px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; }
+    .actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .actions button, .gate button, .order button { height: 44px; border: 1px solid #bbc4ca; border-radius: 8px; background: #fff; font: inherit; font-weight: 600; color: var(--text); }
+    button:disabled { opacity: .4; }
+    button.primary { background: var(--green); border-color: var(--green); color: #fff; }
+    button.danger { color: var(--red); border-color: #d9aaa6; }
+    h2 { margin: 0 0 8px; font-size: 14px; color: var(--muted); font-weight: 600; }
+    .tables { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .tables td { padding: 7px 4px; border-bottom: 1px solid #eceff1; white-space: nowrap; }
+    .tables td.run { color: var(--blue); font-weight: 650; white-space: normal; word-break: break-all; }
+    .tables tr.chase td { background: #fff8ec; }
+    pre { margin: 0; max-height: 260px; overflow: auto; padding: 10px; border-radius: 8px; background: #20282d; color: #dce5e9; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+    .order { padding: 10px 0; border-bottom: 1px solid #eceff1; }
+    .order:last-child { border-bottom: 0; }
+    .order .actions { margin-top: 8px; }
+    .cmd { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; font-size: 13px; border-bottom: 1px solid #f0f2f3; }
+    .cmd:last-child { border-bottom: 0; }
+    .ok { color: var(--green); } .failed { color: var(--red); } .pending, .running { color: var(--amber); }
+    .banner { padding: 10px 12px; margin-bottom: 10px; border-radius: 8px; background: #fff4e0; color: #7a4e0c; font-size: 13px; }
+    .gate { max-width: 380px; margin: 40px auto; }
+    .gate label { display: block; margin-bottom: 12px; color: var(--muted); font-size: 13px; }
+    .gate input { display: block; width: 100%; height: 44px; margin-top: 5px; padding: 0 12px; border: 1px solid #bbc4ca; border-radius: 8px; font: inherit; }
+    .gate button { width: 100%; }
+    .error { min-height: 20px; margin-top: 10px; color: var(--red); font-size: 13px; }
+    .toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: calc(100vw - 32px); padding: 10px 14px; border-radius: 8px; background: #243039; color: #fff; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; }
+    .toast.show { opacity: 1; }
+    .toast.error { background: var(--red); }
+  </style>
+</head>
+<body>
+  <header>
+    <button id="back" hidden>‹ 返回</button>
+    <h1 id="title">亚信全桌监控</h1>
+    <button id="logout" hidden>退出</button>
+  </header>
+  <main id="app"></main>
+  <div id="toast" class="toast"></div>
+  <script>
+    const $ = id => document.getElementById(id);
+    const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const num = v => v == null ? '-' : String(+Number(v).toFixed(2));
+    const kNum = v => { const n = Number(v || 0); return Math.abs(n) >= 1000 ? +(n / 1000).toFixed(3) + 'K' : String(+n.toFixed(2)); };
+    const modeText = m => ({ ReadOnly: '只读', Simulation: '模拟', Live: '真实' }[m] || m || '-');
+    const actionText = { start: '启动监控', stop: '停止监控', 'pause-orders': '暂停自动下单', 'resume-orders': '恢复自动下单', reconcile: '订单对账' };
+    const statusText = { pending: '等待设备领取', running: '执行中', ok: '成功', failed: '失败' };
+    let view = 'list', current = null, timer = null, busy = false, machines = [];
+
+    async function api(path, body) {
+      const options = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Mobile': '1' }, body: JSON.stringify(body) };
+      const response = await fetch('/m/api/' + path, { credentials: 'same-origin', cache: 'no-store', ...options });
+      let data = {};
+      try { data = await response.json(); } catch { }
+      if (response.status === 401 && path !== 'login') { showLogin(); throw new Error(data.error || '请先登录。'); }
+      if (!response.ok) throw new Error(data.error || '请求失败（' + response.status + '）');
+      return data;
+    }
+
+    function notify(message, error = false) {
+      const toast = $('toast');
+      toast.textContent = message;
+      toast.className = 'toast show' + (error ? ' error' : '');
+      clearTimeout(notify.timer);
+      notify.timer = setTimeout(() => toast.className = 'toast', 2600);
+    }
+
+    function schedule(fn, ms) { clearTimeout(timer); timer = setTimeout(fn, ms); }
+
+    function showLogin() {
+      view = 'login';
+      clearTimeout(timer);
+      $('back').hidden = true; $('logout').hidden = true;
+      $('title').textContent = '亚信全桌监控';
+      $('app').innerHTML = `<div class="card gate">
+        <h2 style="font-size:17px;color:var(--text)">登录</h2>
+        <p class="muted">使用工具的授权账号登录，查看和控制你的设备。</p>
+        <label>用户名<input id="username" autocomplete="username" autocapitalize="off"></label>
+        <label>密码<input id="password" type="password" autocomplete="current-password"></label>
+        <button class="primary" id="loginBtn">登录</button>
+        <div class="error" id="loginError"></div></div>`;
+      $('username').value = localStorage.getItem('yx-m-user') || '';
+      const submit = async () => {
+        $('loginBtn').disabled = true;
+        try {
+          const data = await api('login', { username: $('username').value, password: $('password').value });
+          localStorage.setItem('yx-m-user', data.username);
+          showList();
+        } catch (error) { $('loginError').textContent = error.message; }
+        finally { if ($('loginBtn')) $('loginBtn').disabled = false; }
+      };
+      $('loginBtn').onclick = submit;
+      $('password').onkeydown = e => { if (e.key === 'Enter') submit(); };
+    }
+
+    function online(machine, now, seconds) {
+      if (machine.connected) return true;
+      return machine.lastSeen && (new Date(now) - new Date(machine.lastSeen)) / 1000 < seconds;
+    }
+
+    async function showList() {
+      view = 'list'; current = null;
+      $('back').hidden = true; $('logout').hidden = false;
+      $('title').textContent = '我的设备';
+      await refreshList();
+    }
+
+    async function refreshList() {
+      if (view !== 'list') return;
+      try {
+        const data = await api('machines');
+        if (view !== 'list') return;
+        machines = data.machines;
+        $('title').textContent = '我的设备 · ' + data.username;
+        if (!machines.length) { $('app').innerHTML = '<div class="card muted">还没有设备。请先在电脑上用这个账号登录工具。</div>'; }
+        else $('app').innerHTML = machines.map((m, i) => {
+          const t = m.telemetry || {};
+          const on = online(m, data.now, data.onlineSeconds);
+          return `<button class="card machine" data-i="${i}">
+            <div class="row"><span class="dot ${on ? (t.running ? 'on' : 'warn') : ''}"></span>
+              <span class="grow name">${esc(m.note || m.name)}</span>
+              ${t.mode === 'Live' ? '<span class="tag live">真实</span>' : `<span class="tag">${esc(modeText(t.mode))}</span>`}
+              ${t.running ? '<span class="tag run">运行中</span>' : ''}</div>
+            <div class="muted" style="margin-top:4px">${on ? esc(t.status || '在线') : '离线 · 最后上报 ' + esc(fmtTime(m.lastSeen))}${m.connected || !on ? '' : (versionAtLeast(m.version, '1.6.6') ? ' · 远程通道连接中' : ' · v' + esc(m.version || '?') + ' 不支持远程控制')}</div>
+            <div class="grid"><div class="muted">余额<strong>${num(t.balance)}</strong></div>
+              <div class="muted">今日投注<strong>${num(t.dailyStake)}</strong></div>
+              <div class="muted">追注中<strong>${t.chasing ?? '-'}</strong></div>
+              <div class="muted">自动下单<strong>${t.running ? (t.ordersPaused ? '已暂停' : '进行中') : '-'}</strong></div></div>
+          </button>`;
+        }).join('');
+        document.querySelectorAll('.machine').forEach(el => el.onclick = () => showMachine(machines[+el.dataset.i]));
+      } catch (error) { if (view === 'list') notify(error.message, true); }
+      schedule(refreshList, 10000);
+    }
+
+    function fmtTime(value) {
+      if (!value) return '-';
+      const d = new Date(value);
+      return isNaN(d) ? value : d.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+
+    function showMachine(machine) {
+      view = 'machine'; current = machine;
+      $('back').hidden = false; $('logout').hidden = true;
+      $('title').textContent = machine.note || machine.name;
+      $('app').innerHTML = '<div class="card muted">正在连接设备…</div>';
+      refreshMachine();
+    }
+
+    async function refreshMachine() {
+      if (view !== 'machine' || !current) return;
+      try {
+        const data = await api('machine?machineId=' + encodeURIComponent(current.machineId));
+        if (view === 'machine') renderMachine(data);
+      } catch (error) { if (view === 'machine') notify(error.message, true); }
+      schedule(refreshMachine, 2000);
+    }
+
+    function renderMachine(data) {
+      const s = data.snapshot;
+      const age = s && data.snapshotAt ? (new Date(data.now) - new Date(data.snapshotAt)) / 1000 : Infinity;
+      const fresh = data.connected && age < 15;
+      const live = s?.mode === 'Live';
+      if (!data.connected) { renderReadonly(data); return; }
+      let html = '';
+      if (!fresh) html += '<div class="banner">正在等待设备上传实时数据…</div>';
+      if (!s) { $('app').innerHTML = html + '<div class="card muted">暂无实时数据。</div>' + renderCommands(data.commands); return; }
+
+      html += `<div class="card"><div class="row"><span class="dot ${s.running ? 'on' : ''}"></span>
+          <span class="grow name">${esc(s.status)}</span>
+          ${live ? '<span class="tag live">真实</span>' : `<span class="tag">${esc(modeText(s.mode))}</span>`}</div>
+        <div class="muted" style="margin-top:4px">v${esc(s.version)} · ${s.siteLoggedIn ? '网站已登录' : (s.running ? '网站未登录' : '未运行')} · 更新于 ${esc(fmtTime(s.at))}</div>
+        <div class="grid"><div class="muted">余额<strong>${num(s.balance)}</strong></div>
+          <div class="muted">自动下单<strong>${s.running ? (s.ordersPaused ? '已暂停' : '进行中') : '-'}</strong></div>
+          <div class="muted">今日投注<strong>${num(s.dailyStake)} / ${num(s.dailyStakeLimit)}</strong></div>
+          <div class="muted">在途<strong>${num(s.reservedStake)} / ${num(s.maxReservedStake)}</strong></div></div>
+        <div class="muted" style="margin-top:8px">${esc(s.strategy || '')}</div>
+        ${renderTurnover(s.siteTurnover)}</div>`;
+
+      const can = data.connected && !busy;
+      html += `<div class="card"><h2>控制</h2><div class="actions">
+          <button class="primary" data-act="start" ${can && !s.running ? '' : 'disabled'}>启动监控</button>
+          <button class="danger" data-act="stop" ${can && s.running ? '' : 'disabled'}>停止监控</button>
+          <button data-act="${s.ordersPaused ? 'resume-orders' : 'pause-orders'}" ${can && s.running && live ? '' : 'disabled'}>${s.ordersPaused ? '恢复自动下单' : '暂停自动下单'}</button>
+        </div><div class="muted" style="margin-top:8px">远程启动使用电脑上已保存的设置；真实模式启动后自动下单默认暂停，需要再点“恢复自动下单”。</div></div>`;
+
+      const orders = s.reconciliationOrders || [];
+      if (orders.length) html += `<div class="card"><h2>待对账订单（${orders.length}）</h2>${orders.map((o, i) => `<div class="order">
+          <div>桌台 ${esc(o.tableId)} · ${esc(o.side)} ${num(o.amount)} · 第 ${esc(o.attempt)} 手</div>
+          <div class="muted">${esc(fmtTime(o.createdAt))} · ${o.status === 'Unknown' ? '下注结果未知' : '等待结算'}</div>
+          <div class="actions"><button data-order="${i}" data-res="ConfirmedNotPlaced" ${can ? '' : 'disabled'}>确认未下注</button>
+            <button data-order="${i}" data-res="ConfirmedSettled" ${can ? '' : 'disabled'}>确认已结算</button></div></div>`).join('')}</div>`;
+
+      html += renderCommands(data.commands);
+
+      const tables = s.tables || [];
+      html += `<div class="card"><h2>桌台（${tables.length}，追注 ${tables.filter(t => t.chase !== '-').length}）</h2>
+        ${tables.length ? `<table class="tables">${tables.map(t => `<tr class="${t.chase !== '-' ? 'chase' : ''}">
+          <td>${esc(t.name)}</td><td>${esc(t.state)}</td><td class="run">${esc(t.latestRun)}</td><td>${esc(t.chase)}</td><td>${t.remainingSeconds > 0 ? t.remainingSeconds + 's' : ''}</td></tr>`).join('')}</table>`
+          : '<div class="muted">等待全桌数据</div>'}</div>`;
+
+      html += `<div class="card"><h2>日志</h2><pre id="logs">${esc((s.logs || []).join('\n'))}</pre></div>`;
+
+      const logs = $('logs');
+      const atBottom = !logs || logs.scrollHeight - logs.scrollTop - logs.clientHeight < 28;
+      const scrollY = window.scrollY;
+      $('app').innerHTML = html;
+      window.scrollTo(0, scrollY);
+      if (atBottom && $('logs')) $('logs').scrollTop = $('logs').scrollHeight;
+      else if ($('logs') && logs) $('logs').scrollTop = logs.scrollTop;
+
+      document.querySelectorAll('[data-act]').forEach(el => el.onclick = () => send(el.dataset.act, {}, live));
+      document.querySelectorAll('[data-order]').forEach(el => el.onclick = () => {
+        const o = orders[+el.dataset.order];
+        send('reconcile', { orderKey: o.orderKey, resolution: el.dataset.res }, live,
+          `桌台 ${o.tableId} ${o.side} ${num(o.amount)}\n${el.dataset.res === 'ConfirmedNotPlaced' ? '确认网站上没有这笔下注？' : '确认这笔下注已在网站结算？'}`);
+      });
+    }
+
+    // 1.6.5 及以前的工具不连远程通道，或设备离线：用每分钟一次的定时上报只读展示，不提供控制。
+    function renderReadonly(data) {
+      const m = data.machine || current, t = m.telemetry || {};
+      const on = online(m, data.now, data.onlineSeconds);
+      const old = !versionAtLeast(m.version, '1.6.6');
+      let html = `<div class="banner">${on
+        ? (old ? `该电脑的工具是 v${esc(m.version || '?')}，更新到 1.6.6 及以上后才能实时查看和远程控制。下面是每分钟上报一次的数据，仅供查看。`
+               : '正在连接设备的远程通道…下面是每分钟上报一次的数据。')
+        : `设备离线，最后上报 ${esc(fmtTime(m.lastSeen))}。下面是最后一次收到的数据。`}</div>`;
+      if (!m.telemetry) { $('app').innerHTML = html + '<div class="card muted">暂无数据。</div>' + renderCommands(data.commands); return; }
+      const live = t.mode === 'Live';
+      html += `<div class="card"><div class="row"><span class="dot ${on ? (t.running ? 'on' : 'warn') : ''}"></span>
+          <span class="grow name">${esc(t.status || '-')}</span>
+          ${live ? '<span class="tag live">真实</span>' : `<span class="tag">${esc(modeText(t.mode))}</span>`}</div>
+        <div class="muted" style="margin-top:4px">v${esc(t.version || m.version || '?')} · ${t.siteLoggedIn ? '网站已登录' : (t.running ? '网站未登录' : '未运行')}</div>
+        <div class="grid"><div class="muted">余额<strong>${num(t.balance)}</strong></div>
+          <div class="muted">自动下单<strong>${t.running ? (t.ordersPaused ? '已暂停' : '进行中') : '-'}</strong></div>
+          <div class="muted">今日投注<strong>${num(t.dailyStake)} / ${num(t.dailyStakeLimit)}</strong></div>
+          <div class="muted">在途<strong>${num(t.reservedStake)} / ${num(t.maxReservedStake)}</strong></div></div>
+        <div class="muted" style="margin-top:8px">${esc(t.strategy || '')}</div>
+        ${renderTurnover(t.siteTurnover)}</div>`;
+      html += renderCommands(data.commands);
+      const chases = t.chases || [];
+      html += `<div class="card"><h2>桌台（${t.tables ?? 0}，追注 ${t.chasing ?? chases.length}）</h2>
+        ${chases.length ? `<table class="tables">${chases.map(c => `<tr class="chase"><td>${esc(c.name)}</td><td class="run">${esc(c.latestRun)}</td><td>${esc(c.chase)}</td></tr>`).join('')}</table>`
+          : '<div class="muted">没有追注中的桌台</div>'}</div>`;
+      const scrollY = window.scrollY;
+      $('app').innerHTML = html;
+      window.scrollTo(0, scrollY);
+    }
+
+    function versionAtLeast(version, target) {
+      const a = String(version || '').split('.').map(Number), b = target.split('.').map(Number);
+      for (let i = 0; i < b.length; i++) {
+        const x = a[i] || 0;
+        if (x !== b[i]) return x > b[i];
+      }
+      return true;
+    }
+
+    function renderTurnover(t) {
+      if (!t) return '';
+      const part = (label, x) => x ? `<div>${label}：投注 ${kNum(x.bet)} · 洗码 ${kNum(x.valid)} · 输赢 ${kNum(x.winLost)}（${x.count} 笔）</div>` : '';
+      return `<div class="muted" style="margin-top:8px;line-height:1.6">${part('今日', t.today)}${part('本周', t.week)}${t.error ? '<div class="failed">码量查询失败：' + esc(t.error) + '</div>' : ''}</div>`;
+    }
+
+    function renderCommands(commands) {
+      if (!commands?.length) return '';
+      return `<div class="card"><h2>最近指令</h2>${commands.slice(0, 6).map(c => `<div class="cmd">
+        <span>${esc(actionText[c.action] || c.action)} <span class="muted">${esc(fmtTime(c.createdAt))}</span></span>
+        <span class="${c.status}">${esc(statusText[c.status] || c.status)}${c.message ? '：' + esc(c.message) : ''}</span></div>`).join('')}</div>`;
+    }
+
+    async function send(action, extra, live, question) {
+      const machine = current;
+      const prompt = question || (action === 'resume-orders' && live ? '恢复真实自动下单？将使用真实资金下注。'
+        : action === 'start' ? '在电脑上启动监控（会打开专用 Chrome）？'
+        : action === 'stop' ? '停止监控？' : actionText[action] + '？');
+      if (!confirm(prompt)) return;
+      busy = true;
+      try {
+        await api('command', { machineId: machine.machineId, action, ...extra });
+        notify('指令已发送：' + actionText[action]);
+      } catch (error) { notify(error.message, true); }
+      finally { busy = false; if (view === 'machine') refreshMachine(); }
+    }
+
+    $('back').onclick = () => showList();
+    $('logout').onclick = async () => { try { await api('logout', {}); } catch { } showLogin(); };
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) clearTimeout(timer);
+      else if (view === 'list') refreshList();
+      else if (view === 'machine') refreshMachine();
+    });
+    showList();
+  </script>
+</body>
+</html>

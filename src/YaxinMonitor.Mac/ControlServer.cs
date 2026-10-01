@@ -180,6 +180,7 @@ internal sealed class ControlServer : IAsyncDisposable
                 LicenseLoginResult result = await _license.LoginAsync(request.Username, request.Password).ConfigureAwait(false);
                 if (!result.Success) throw new InvalidOperationException(result.Message);
                 _licensed = true;
+                _license.RemoteCommandHandler = RunRemoteCommandAsync;
                 _license.Attach(_service, () => _settings);
                 OnLog($"授权成功：{_license.Username}（本机 {_license.MachineId[..12]}）。");
                 _ = CheckUpdateQuietlyAsync();
@@ -279,6 +280,53 @@ internal sealed class ControlServer : IAsyncDisposable
                 return;
         }
         await WriteJsonAsync(context.Response, new { ok = true }).ConfigureAwait(false);
+    }
+
+    // 手机远程指令：与控制页共用命令锁，检查规则和按钮一致。
+    private async Task<string> RunRemoteCommandAsync(RemoteCommand command)
+    {
+        OnLog($"收到手机指令：{command.ActionText}。");
+        await _commandGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_revokedMessage is { } revoked) throw new InvalidOperationException(revoked);
+            switch (command.Action)
+            {
+                case "start":
+                    if (_service.IsRunning) return "监控已在运行。";
+                    if (_updating) throw new InvalidOperationException("电脑上正在更新程序，暂不能启动监控。");
+                    _service.Start(Path.Combine(_store.DirectoryPath, "chrome-profile"));
+                    OnLog("手机远程启动：使用已保存的设置启动专用 Chrome 和监控服务...");
+                    return "已启动，等待网站连接。";
+                case "stop":
+                    if (!_service.IsRunning) return "监控未运行。";
+                    await _service.StopAsync().ConfigureAwait(false);
+                    return "监控已停止。";
+                case "pause-orders":
+                case "resume-orders":
+                    if (!_service.IsRunning || _settings.Mode != MonitorMode.Live)
+                        throw new InvalidOperationException("只有真实模式运行中才能暂停或恢复自动下单。");
+                    if (command.Action == "pause-orders") _service.PauseOrders("手机远程暂停");
+                    else _service.ResumeOrders();
+                    return command.Action == "pause-orders" ? "自动下单已暂停。" : "自动下单已恢复。";
+                case "reconcile":
+                    if (!Enum.TryParse(command.Resolution, out ManualOrderResolution resolution) || string.IsNullOrEmpty(command.OrderKey))
+                        throw new ArgumentException("对账参数无效。");
+                    _service.ResolveOrder(command.OrderKey, resolution);
+                    return "对账完成。";
+                default:
+                    throw new InvalidOperationException("不支持的操作。");
+            }
+        }
+        catch (Exception exception)
+        {
+            OnLog($"手机指令未执行：{exception.Message}");
+            throw;
+        }
+        finally
+        {
+            _commandGate.Release();
+        }
     }
 
     private void ScheduleShutdown() => _ = Task.Run(async () =>

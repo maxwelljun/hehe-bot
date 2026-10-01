@@ -54,9 +54,13 @@ var app = builder.Build();
 
 var limiter = new FailureLimiter();
 var adminSessions = new ConcurrentDictionary<string, DateTimeOffset>();
+var mobileSessions = new ConcurrentDictionary<string, (string Username, DateTimeOffset Expires)>();
+var remote = new RemoteHub();
 const string AdminCookie = "yx_admin";
+const string MobileCookie = "yx_m";
 const int ReportIntervalSeconds = 60;
 string adminHtml = LoadResource("admin.html");
+string mobileHtml = LoadResource("m.html");
 
 string ClientIp(HttpContext context) => context.Connection.RemoteIpAddress?.MapToIPv4().ToString() ?? "";
 
@@ -164,6 +168,134 @@ app.MapGet("/api/v1/update/download", (HttpContext context, string? runtime, str
     if (context.Request.Headers.Range.Count == 0)
         db.AddEvent("update-download", session.Username, session.MachineId, ClientIp(context), package.FileName);
     return Results.File(updates.PathOf(package), "application/zip", package.FileName, enableRangeProcessing: true);
+});
+
+// 手机远程控制通道：客户端长轮询领取指令、回传结果；有手机在看时附带实时快照。
+app.MapPost("/api/v1/sync", async (HttpContext context, ClientSync sync) =>
+{
+    SessionRow? session = FindClientSession(context);
+    if (session is null) return Results.Json(new { message = "会话已失效" }, statusCode: 401);
+    if (ClientDenial(session) is { } denial) return Results.Json(new { message = denial }, statusCode: 403);
+    if (sync.Snapshot is { } snapshot && snapshot.GetRawText().Length > 256 * 1024) sync = sync with { Snapshot = null };
+    try
+    {
+        var (commands, live) = await remote.SyncAsync(session.MachineId, sync, context.RequestAborted);
+        return Results.Json(new { commands, live });
+    }
+    catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+    {
+        return Results.Empty;
+    }
+});
+
+// ---------- 手机远程查看 ----------
+
+string? MobileUser(HttpContext context)
+{
+    if (!context.Request.Cookies.TryGetValue(MobileCookie, out string? token) || string.IsNullOrEmpty(token)) return null;
+    string key = Passwords.Sha256(token);
+    if (!mobileSessions.TryGetValue(key, out var entry)) return null;
+    if (entry.Expires < DateTimeOffset.UtcNow || db.FindUser(entry.Username) is not { Enabled: true })
+    {
+        mobileSessions.TryRemove(key, out _);
+        return null;
+    }
+    return entry.Username;
+}
+
+bool OwnsMachine(string username, string machineId) =>
+    string.Equals(db.MachineOwner(machineId), username, StringComparison.OrdinalIgnoreCase);
+
+MobileMachineView MobileMachine(object machine)
+{
+    JsonElement json = JsonSerializer.SerializeToElement(machine, machine.GetType());
+    string id = json.GetProperty("machineId").GetString()!;
+    return new MobileMachineView(id, json.GetProperty("name").GetString(), json.GetProperty("note").GetString(),
+        json.GetProperty("version").GetString(), json.GetProperty("enabled").GetBoolean(),
+        json.GetProperty("lastSeen"), json.GetProperty("telemetry"), remote.IsClientConnected(id));
+}
+
+app.MapGet("/m", (HttpContext context) =>
+{
+    context.Response.Headers.CacheControl = "no-store";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-ancestors 'none'";
+    return Results.Content(mobileHtml, "text/html; charset=utf-8");
+});
+
+app.MapPost("/m/api/login", (HttpContext context, MobileLoginRequest request) =>
+{
+    string ip = ClientIp(context);
+    if (limiter.IsBlocked(ip)) return Results.Json(new { error = "尝试次数过多，请 10 分钟后再试。" }, statusCode: 429);
+    UserRow? user = db.FindUser((request.Username ?? "").Trim());
+    if (user is null || !Passwords.Verify(request.Password ?? "", user.PasswordHash))
+    {
+        limiter.Fail(ip);
+        db.AddEvent("mobile-login-failed", request.Username ?? "", "", ip, "");
+        return Results.Json(new { error = "用户名或密码错误。" }, statusCode: 401);
+    }
+    limiter.Reset(ip);
+    if (!user.Enabled) return Results.Json(new { error = "账号已被禁用，请联系管理员。" }, statusCode: 403);
+    string token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+    mobileSessions[Passwords.Sha256(token)] = (user.Username, DateTimeOffset.UtcNow.AddDays(7));
+    context.Response.Cookies.Append(MobileCookie, token, new CookieOptions
+    {
+        HttpOnly = true, Secure = true, SameSite = SameSiteMode.Strict, Path = "/m", MaxAge = TimeSpan.FromDays(7)
+    });
+    db.AddEvent("mobile-login", user.Username, "", ip, context.Request.Headers.UserAgent.ToString());
+    return Results.Json(new { ok = true, username = user.Username });
+});
+
+var mobile = app.MapGroup("/m/api").AddEndpointFilter(async (invocation, next) =>
+{
+    HttpContext context = invocation.HttpContext;
+    if (context.Request.Path.StartsWithSegments("/m/api/login")) return await next(invocation);
+    if (MobileUser(context) is null) return Results.Json(new { error = "请先登录。" }, statusCode: 401);
+    if (HttpMethods.IsPost(context.Request.Method) && context.Request.Headers["X-Mobile"] != "1")
+        return Results.Json(new { error = "请求无效。" }, statusCode: 403);
+    return await next(invocation);
+});
+
+mobile.MapPost("/logout", (HttpContext context) =>
+{
+    if (context.Request.Cookies.TryGetValue(MobileCookie, out string? token))
+        mobileSessions.TryRemove(Passwords.Sha256(token), out _);
+    context.Response.Cookies.Delete(MobileCookie, new CookieOptions { Path = "/m" });
+    return Results.Json(new { ok = true });
+});
+mobile.MapGet("/machines", (HttpContext context) =>
+{
+    string username = MobileUser(context)!;
+    var machines = db.ListMachines(username).Select(MobileMachine);
+    return Results.Json(new { username, now = DateTimeOffset.UtcNow, onlineSeconds = ReportIntervalSeconds * 3, machines });
+});
+mobile.MapGet("/machine", (HttpContext context, string machineId) =>
+{
+    // 旧版本工具（1.6.5 及以前）不连远程通道，手机端用定时上报的数据只读展示。
+    MobileMachineView? machine = db.ListMachines(MobileUser(context)!).Select(MobileMachine).FirstOrDefault(item => item.MachineId == machineId);
+    if (machine is null) return Results.Json(new { error = "设备不存在。" }, statusCode: 404);
+    var (snapshot, snapshotAt, connected, commands) = remote.View(machineId);
+    return Results.Json(new { now = DateTimeOffset.UtcNow, onlineSeconds = ReportIntervalSeconds * 3, machine, connected, snapshot, snapshotAt, commands });
+});
+mobile.MapPost("/command", (HttpContext context, MobileCommandRequest request) =>
+{
+    string username = MobileUser(context)!;
+    string machineId = request.MachineId ?? "";
+    if (!OwnsMachine(username, machineId)) return Results.Json(new { error = "设备不存在。" }, statusCode: 404);
+    if (db.FindMachine(machineId) is not { Enabled: true }) return Results.Json(new { error = "设备已被禁用。" }, statusCode: 403);
+    string action = request.Action ?? "";
+    if (!RemoteHub.Actions.Contains(action)) return Results.Json(new { error = "不支持的操作。" }, statusCode: 400);
+    if (action == "reconcile" && (string.IsNullOrEmpty(request.OrderKey)
+        || request.Resolution is not ("ConfirmedNotPlaced" or "ConfirmedSettled")))
+        return Results.Json(new { error = "对账参数无效。" }, statusCode: 400);
+    if (!remote.IsClientConnected(machineId))
+        return Results.Json(new { error = "设备不在线，或工具版本不支持远程控制。" }, statusCode: 409);
+    var command = new RemoteCommand(Convert.ToHexString(RandomNumberGenerator.GetBytes(8)), action,
+        action == "reconcile" ? request.OrderKey : null, action == "reconcile" ? request.Resolution : null);
+    RemoteCommandView view = remote.Enqueue(machineId, command);
+    db.AddEvent("remote-command", username, machineId, ClientIp(context),
+        action + (command.OrderKey is null ? "" : $" {command.OrderKey} {command.Resolution}"));
+    return Results.Json(view);
 });
 
 // ---------- 公开下载页 ----------
