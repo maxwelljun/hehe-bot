@@ -41,8 +41,8 @@ internal sealed class MonitorService : IAsyncDisposable
     private long _nextSubmitTimestamp;
     private string? _reportedBundle;
     private string? _reportedCompatibilityIssue;
-    private static readonly TimeSpan TodayTurnoverInterval = TimeSpan.FromMinutes(1);
-    private static readonly TimeSpan WeekTurnoverInterval = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan TodayTurnoverInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan WeekTurnoverInterval = TimeSpan.FromHours(1);
     private volatile BridgeTurnover? _siteTurnover;
 
     public event Action<string>? LogReceived;

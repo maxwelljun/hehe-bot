@@ -203,12 +203,26 @@
     };
   }
 
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  // 网站对投注记录接口限频（连续调用返回“频繁调用”），两次查询间隔 15 秒，被限频时等待后重试。
+  async function fetchTurnoverWithRetry(range) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fetchTurnover(range);
+      } catch (error) {
+        if (attempt >= 2 || !/频繁/.test(String(error && error.message))) throw error;
+        await sleep(30000 * (attempt + 1));
+      }
+    }
+  }
+
   async function refreshTurnover(ranges) {
     try {
       for (let i = 0; i < ranges.length; i++) {
-        if (i > 0) await new Promise(resolve => setTimeout(resolve, 6000));
+        if (i > 0) await sleep(15000);
         const range = ranges[i];
-        turnover[range.key] = await fetchTurnover(range);
+        turnover[range.key] = await fetchTurnoverWithRetry(range);
       }
       turnover.error = "";
     } catch (error) {
