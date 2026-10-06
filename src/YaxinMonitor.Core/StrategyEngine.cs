@@ -93,7 +93,7 @@ public sealed class StrategyEngine
             string orderKey = BuildOrderKey(snapshot, chase);
             chase.AttemptedGameSeqs.Add(snapshot.GameSeq);
             var candidate = new BetCandidate(orderKey, chase.TaskKey, snapshot.TableId, snapshot.TableName,
-                snapshot.ShoeSeq, snapshot.GameSeq, chase.BetSide, amount, chase.AttemptIndex + 1,
+                snapshot.ShoeSeq, snapshot.GameSeq, AttemptSide(chase), amount, chase.AttemptIndex + 1,
                 snapshot.History.Length, now);
             events.Add(new BetRequestedEvent(snapshot.TableId,
                 $"{snapshot.TableName} 第 {candidate.Attempt} 档买{SideText(candidate.Side)} {amount:0.##}。", candidate));
@@ -288,7 +288,7 @@ public sealed class StrategyEngine
             return;
         }
 
-        bool won = outcome == FixedStrategy.ToOutcome(chase.BetSide);
+        bool won = outcome == FixedStrategy.ToOutcome(order.Side);
         if (won)
         {
             string taskKey = chase.TaskKey;
@@ -391,8 +391,15 @@ public sealed class StrategyEngine
     }
 
     private static string BuildOrderKey(TableSnapshot snapshot, ChaseTaskState chase) => string.Join(':', chase.TaskKey,
-        snapshot.GameSeq.ToString(CultureInfo.InvariantCulture), ((int)chase.BetSide).ToString(CultureInfo.InvariantCulture),
+        snapshot.GameSeq.ToString(CultureInfo.InvariantCulture), ((int)AttemptSide(chase)).ToString(CultureInfo.InvariantCulture),
         (chase.AttemptIndex + 1).ToString(CultureInfo.InvariantCulture));
+
+    // 一拖二、一拖三：第一档买反门（chase.BetSide），之后每一档都买第一档的另一边。
+    // 例如庄闲闲庄闲闲：第一档买庄，第二、三档买闲。其他模式每档都买同一边。
+    private static BetSide AttemptSide(ChaseTaskState chase) =>
+        chase.AttemptIndex > 0 && chase.Pattern is StrategyPattern.OneTwoAlternation or StrategyPattern.OneThreeAlternation
+            ? (chase.BetSide == BetSide.Banker ? BetSide.Player : BetSide.Banker)
+            : chase.BetSide;
 
     private static string SideText(BaccaratOutcome outcome) => outcome switch
     {

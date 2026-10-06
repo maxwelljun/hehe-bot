@@ -322,8 +322,8 @@ internal sealed class MainForm : Form
         _toolTips.SetToolTip(_patterns[1].Box, "最新 6 口一口一换，如庄闲庄闲庄闲。");
         _toolTips.SetToolTip(_patterns[2].Box, "最新 6 口两口一换，如庄庄闲闲庄庄。");
         _toolTips.SetToolTip(_patterns[3].Box, "最新 9 口三口一换，如庄庄庄闲闲闲庄庄庄。");
-        _toolTips.SetToolTip(_patterns[4].Box, "最新 6 口一口两口交替，如庄闲闲庄闲闲，反向时第 7 口买庄。");
-        _toolTips.SetToolTip(_patterns[5].Box, "最新 8 口一口三口交替，如庄闲闲闲庄闲闲闲，反向时第 9 口买庄。");
+        _toolTips.SetToolTip(_patterns[4].Box, "最新 6 口一口两口交替，如庄闲闲庄闲闲，反向时第一档买庄，之后各档买闲。");
+        _toolTips.SetToolTip(_patterns[5].Box, "最新 8 口一口三口交替，如庄闲闲闲庄闲闲闲，反向时第一档买庄，之后各档买闲。");
         _toolTips.SetToolTip(_start, "使用当前设置启动监控，并恢复上次运行状态。");
         _toolTips.SetToolTip(_stop, "停止监控服务。专用 Chrome 不会关闭。");
         _toolTips.SetToolTip(_pause, "只暂停或恢复新的自动订单；监控和已受理订单继续运行。");

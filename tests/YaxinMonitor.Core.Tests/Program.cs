@@ -468,7 +468,7 @@ var tests = new (string Name, Action Run)[]
         Equal(6, PatternDetector.RequiredHands(StrategyPattern.OneTwoAlternation, 6));
         Equal(8, PatternDetector.RequiredHands(StrategyPattern.OneThreeAlternation, 6));
     }),
-    ("One-two chase continues after a loss and stops after a win", () =>
+    ("One-two chase bets banker first, then player, and stops after a win", () =>
     {
         var (engine, snapshot) = Ready([1, 2, 2, 1, 2, 2], Patterns(StrategyPattern.OneTwoAlternation));
         BetCandidate first = Candidate(engine.Observe(snapshot, Now()));
@@ -477,10 +477,21 @@ var tests = new (string Name, Action Run)[]
         engine.MarkAccepted(first.OrderKey, Now());
         snapshot = snapshot with { History = [.. snapshot.History, 2], GameSeq = snapshot.GameSeq + 1 };
         BetCandidate second = Candidate(engine.Observe(snapshot, Now()));
-        Equal(BetSide.Banker, second.Side); Equal(20m, second.Amount); Equal(2, second.Attempt);
+        Equal(BetSide.Player, second.Side); Equal(20m, second.Amount); Equal(2, second.Attempt);
         engine.MarkSubmitted(second, Now());
         engine.MarkAccepted(second.OrderKey, Now());
+        // 和局不消耗档位，下一局仍是第二档买闲。
+        snapshot = snapshot with { History = [.. snapshot.History, 3], GameSeq = snapshot.GameSeq + 1 };
+        BetCandidate again = Candidate(engine.Observe(snapshot, Now()));
+        Equal(BetSide.Player, again.Side); Equal(2, again.Attempt);
+        engine.MarkSubmitted(again, Now());
+        engine.MarkAccepted(again.OrderKey, Now());
         snapshot = snapshot with { History = [.. snapshot.History, 1], GameSeq = snapshot.GameSeq + 1 };
+        BetCandidate third = Candidate(engine.Observe(snapshot, Now()));
+        Equal(BetSide.Player, third.Side); Equal(40m, third.Amount); Equal(3, third.Attempt);
+        engine.MarkSubmitted(third, Now());
+        engine.MarkAccepted(third.OrderKey, Now());
+        snapshot = snapshot with { History = [.. snapshot.History, 2], GameSeq = snapshot.GameSeq + 1 };
         var events = engine.Observe(snapshot, Now());
         True(events.OfType<ChaseCompletedEvent>().Single().Won);
         True(engine.State.Tables[1].ActiveChase is null);
@@ -497,6 +508,21 @@ var tests = new (string Name, Action Run)[]
             snapshot = snapshot with { History = [.. snapshot.History, hand], GameSeq = snapshot.GameSeq + 1 };
             False(engine.Observe(snapshot, Now()).OfType<BetRequestedEvent>().Any());
         }
+    }),
+    ("One-three chase switches to the other side after the first attempt", () =>
+    {
+        var (engine, snapshot) = Ready([2, 1, 1, 1, 2, 1, 1, 1], Patterns(StrategyPattern.OneThreeAlternation));
+        BetCandidate first = Candidate(engine.Observe(snapshot, Now()));
+        Equal(BetSide.Player, first.Side);
+        engine.MarkSubmitted(first, Now());
+        engine.MarkAccepted(first.OrderKey, Now());
+        snapshot = snapshot with { History = [.. snapshot.History, 1], GameSeq = snapshot.GameSeq + 1 };
+        BetCandidate second = Candidate(engine.Observe(snapshot, Now()));
+        Equal(BetSide.Banker, second.Side); Equal(2, second.Attempt);
+        engine.MarkSubmitted(second, Now());
+        engine.MarkAccepted(second.OrderKey, Now());
+        snapshot = snapshot with { History = [.. snapshot.History, 1], GameSeq = snapshot.GameSeq + 1 };
+        True(engine.Observe(snapshot, Now()).OfType<ChaseCompletedEvent>().Single().Won);
     }),
     ("Alternation runs must match exactly", () =>
     {
