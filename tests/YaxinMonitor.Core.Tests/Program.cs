@@ -424,6 +424,80 @@ var tests = new (string Name, Action Run)[]
             False(shorter.Observe(shortSnapshot, Now()).OfType<BetRequestedEvent>().Any());
         }
     }),
+    ("One-two and one-three patterns bet banker on the next hand", () =>
+    {
+        foreach (var (pattern, history, side) in new (StrategyPattern, int[], BetSide)[]
+        {
+            (StrategyPattern.OneTwoAlternation, [1, 2, 2, 1, 2, 2], BetSide.Banker),
+            (StrategyPattern.OneThreeAlternation, [1, 2, 2, 2, 1, 2, 2, 2], BetSide.Banker),
+            (StrategyPattern.OneTwoAlternation, [2, 1, 1, 2, 1, 1], BetSide.Player),
+            (StrategyPattern.OneThreeAlternation, [2, 1, 1, 1, 2, 1, 1, 1], BetSide.Player),
+            (StrategyPattern.OneTwoAlternation, [2, 2, 1, 3, 2, 2, 1, 2, 3, 2], BetSide.Banker),
+            (StrategyPattern.OneTwoAlternation, [1, 1, 2, 1, 2, 2, 1, 2, 2], BetSide.Banker)
+        })
+        {
+            var (engine, snapshot) = Ready(history, Patterns(pattern));
+            BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+            Equal(side, bet.Side); Equal(10m, bet.Amount);
+            Equal(pattern, engine.State.Tables[1].ActiveChase!.Pattern);
+            var (shorter, shortSnapshot) = Ready(history[..^1], Patterns(pattern));
+            False(shorter.Observe(shortSnapshot, Now()).OfType<BetRequestedEvent>().Any());
+        }
+        foreach (var (pattern, history) in new (StrategyPattern, int[])[]
+        {
+            (StrategyPattern.OneTwoAlternation, [1, 1, 2, 2, 1, 2, 2]),
+            (StrategyPattern.OneTwoAlternation, [1, 2, 2, 1, 2, 2, 2]),
+            (StrategyPattern.OneTwoAlternation, [1, 2, 2, 2, 1, 2, 2]),
+            (StrategyPattern.OneTwoAlternation, [2, 2, 1, 2, 2, 1]),
+            (StrategyPattern.OneThreeAlternation, [1, 2, 2, 1, 2, 2, 2]),
+            (StrategyPattern.OneThreeAlternation, [1, 2, 2, 2, 1, 2, 2]),
+            (StrategyPattern.OneThreeAlternation, [1, 2, 2, 2, 1, 2, 2, 2, 2]),
+            (StrategyPattern.DoubleAlternation, [1, 2, 2, 1, 2, 2])
+        })
+        {
+            var (engine, snapshot) = Ready(history, Patterns(pattern));
+            False(engine.Observe(snapshot, Now()).OfType<BetRequestedEvent>().Any());
+        }
+        int P(int[] h, StrategyPattern p) => PatternDetector.Progress(PatternDetector.RecentRuns(h), p);
+        Equal(1, P([2, 2, 1], StrategyPattern.OneTwoAlternation));
+        Equal(2, P([2, 2, 1, 2], StrategyPattern.OneTwoAlternation));
+        Equal(4, P([1, 2, 2, 1], StrategyPattern.OneTwoAlternation));
+        Equal(5, P([1, 2, 2, 1, 2], StrategyPattern.OneTwoAlternation));
+        Equal(0, P([1, 1, 2, 2], StrategyPattern.OneTwoAlternation));
+        Equal(7, P([1, 2, 2, 2, 1, 2, 2], StrategyPattern.OneThreeAlternation));
+        Equal(6, PatternDetector.RequiredHands(StrategyPattern.OneTwoAlternation, 6));
+        Equal(8, PatternDetector.RequiredHands(StrategyPattern.OneThreeAlternation, 6));
+    }),
+    ("One-two chase continues after a loss and stops after a win", () =>
+    {
+        var (engine, snapshot) = Ready([1, 2, 2, 1, 2, 2], Patterns(StrategyPattern.OneTwoAlternation));
+        BetCandidate first = Candidate(engine.Observe(snapshot, Now()));
+        Equal(BetSide.Banker, first.Side);
+        engine.MarkSubmitted(first, Now());
+        engine.MarkAccepted(first.OrderKey, Now());
+        snapshot = snapshot with { History = [.. snapshot.History, 2], GameSeq = snapshot.GameSeq + 1 };
+        BetCandidate second = Candidate(engine.Observe(snapshot, Now()));
+        Equal(BetSide.Banker, second.Side); Equal(20m, second.Amount); Equal(2, second.Attempt);
+        engine.MarkSubmitted(second, Now());
+        engine.MarkAccepted(second.OrderKey, Now());
+        snapshot = snapshot with { History = [.. snapshot.History, 1], GameSeq = snapshot.GameSeq + 1 };
+        var events = engine.Observe(snapshot, Now());
+        True(events.OfType<ChaseCompletedEvent>().Single().Won);
+        True(engine.State.Tables[1].ActiveChase is null);
+
+        // 第 7 口出庄中奖后，图案继续延长（庄闲闲庄闲闲庄闲闲）属于同一条交替链，不重复触发。
+        (engine, snapshot) = Ready([1, 2, 2, 1, 2, 2], Patterns(StrategyPattern.OneTwoAlternation));
+        first = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(first, Now());
+        engine.MarkAccepted(first.OrderKey, Now());
+        snapshot = snapshot with { History = [.. snapshot.History, 1], GameSeq = snapshot.GameSeq + 1 };
+        True(engine.Observe(snapshot, Now()).OfType<ChaseCompletedEvent>().Single().Won);
+        foreach (int hand in new[] { 2, 2 })
+        {
+            snapshot = snapshot with { History = [.. snapshot.History, hand], GameSeq = snapshot.GameSeq + 1 };
+            False(engine.Observe(snapshot, Now()).OfType<BetRequestedEvent>().Any());
+        }
+    }),
     ("Alternation runs must match exactly", () =>
     {
         foreach (var (pattern, history) in new (StrategyPattern, int[])[]

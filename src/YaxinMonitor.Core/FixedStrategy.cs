@@ -20,7 +20,10 @@ public enum StrategyPattern
     Streak,
     SingleAlternation,
     DoubleAlternation,
-    TripleAlternation
+    TripleAlternation,
+    // 一拖二：庄闲闲庄闲闲（6 口），一拖三：庄闲闲闲庄闲闲闲（8 口）；庄闲互换同样有效。
+    OneTwoAlternation,
+    OneThreeAlternation
 }
 
 public sealed record StrategySettings
@@ -59,7 +62,7 @@ public sealed record StrategySettings
         if (Stakes is null || Stakes.Length is < 1 or > 10) throw new ArgumentException("金额序列必须包含 1–10 档。");
         if (Stakes.Any(value => value <= 0 || value > 1_000_000 || decimal.Truncate(value) != value))
             throw new ArgumentException("每档金额必须是 1–1000000 的整数。");
-        if (Patterns is null || Patterns.Length is < 1 or > 4 || Patterns.Any(pattern => !Enum.IsDefined(pattern))
+        if (Patterns is null || Patterns.Length is < 1 or > 6 || Patterns.Any(pattern => !Enum.IsDefined(pattern))
             || Patterns.Distinct().Count() != Patterns.Length)
             throw new ArgumentException("请至少选择一种有效的识别模式，且不要重复选择。");
     }
@@ -93,6 +96,8 @@ public sealed record StrategySettings
         StrategyPattern.SingleAlternation => "单跳 6 口",
         StrategyPattern.DoubleAlternation => "二排 6 口",
         StrategyPattern.TripleAlternation => "三排 9 口",
+        StrategyPattern.OneTwoAlternation => "一拖二 6 口",
+        StrategyPattern.OneThreeAlternation => "一拖三 8 口",
         _ => pattern.ToString()
     };
 
@@ -183,6 +188,8 @@ public static class PatternDetector
     public static int Progress(IReadOnlyList<ResultRun> runs, StrategyPattern pattern)
     {
         if (runs.Count == 0) return 0;
+        if (LongSide(pattern) is int length)
+            return Math.Max(CycleProgress(runs, length, true), CycleProgress(runs, length, false));
         int block = BlockSize(pattern);
         if (block == 0) return runs[0].Count;
         if (runs[0].Count > block) return 0;
@@ -195,8 +202,43 @@ public static class PatternDetector
     {
         StrategyPattern.Streak => streakLength,
         StrategyPattern.TripleAlternation => 9,
+        StrategyPattern.OneThreeAlternation => 8,
         _ => 6
     };
+
+    // 一拖 N 图案中较长那一段的口数；其他模式返回 null。
+    private static int? LongSide(StrategyPattern pattern) => pattern switch
+    {
+        StrategyPattern.OneTwoAlternation => 2,
+        StrategyPattern.OneThreeAlternation => 3,
+        _ => null
+    };
+
+    // 从最新一段往前，按“长段、单口、长段、单口……”交替计数，返回连续符合的段数。
+    // newestIsLong=false 时最新一段对应单口。最新一段允许尚未走完（只要不超过应有口数）。
+    private static int CycleChain(IReadOnlyList<ResultRun> runs, int length, bool newestIsLong, bool allowPartialNewest)
+    {
+        int chain = 0;
+        while (chain < runs.Count)
+        {
+            bool isLong = (chain % 2 == 0) == newestIsLong;
+            int expected = isLong ? length : 1;
+            int count = runs[chain].Count;
+            if (count != expected && !(chain == 0 && allowPartialNewest && count < expected)) break;
+            chain++;
+        }
+        // 图案从单口开始，最老一段如果是长段就不算在内（前面缺了那一口单口）。
+        if (chain > 0 && ((chain - 1) % 2 == 0) == newestIsLong) chain--;
+        return chain;
+    }
+
+    private static int CycleProgress(IReadOnlyList<ResultRun> runs, int length, bool newestIsLong)
+    {
+        int chain = CycleChain(runs, length, newestIsLong, allowPartialNewest: true);
+        int hands = 0;
+        for (int i = 0; i < chain; i++) hands += runs[i].Count;
+        return hands;
+    }
 
     private static int BlockSize(StrategyPattern pattern) => pattern switch
     {
@@ -214,6 +256,12 @@ public static class PatternDetector
     {
         if (runs.Count == 0) return null;
         if (pattern == StrategyPattern.Streak) return runs[0].Count == streakLength ? runs[0] : null;
+        if (LongSide(pattern) is int length)
+        {
+            // 最新一段必须正好走完长段；锚定整条交替链最老的单口，图案继续延长时不重复触发。
+            int cycle = CycleChain(runs, length, newestIsLong: true, allowPartialNewest: false);
+            return cycle >= 4 ? runs[cycle - 1] : null;
+        }
         int block = BlockSize(pattern);
         int required = RequiredHands(pattern, streakLength) / block;
         int chain = 0;

@@ -38,10 +38,16 @@
     button.primary { background: var(--green); border-color: var(--green); color: #fff; }
     button.danger { color: var(--red); border-color: #d9aaa6; }
     h2 { margin: 0 0 8px; font-size: 14px; color: var(--muted); font-weight: 600; }
-    .tables { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .tables td { padding: 7px 4px; border-bottom: 1px solid #eceff1; white-space: nowrap; }
-    .tables td.run { color: var(--blue); font-weight: 650; white-space: normal; word-break: break-all; }
-    .tables tr.chase td { background: #fff8ec; }
+    .trow { padding: 8px 6px; border-bottom: 1px solid #eceff1; font-size: 13px; overflow-wrap: anywhere; }
+    .trow:last-child { border-bottom: 0; }
+    .trow.chase { background: #fff8ec; border-radius: 6px; }
+    .trow .head { display: flex; gap: 8px; align-items: baseline; }
+    .trow .head .name { flex: 1; min-width: 0; font-weight: 600; }
+    .trow .state { color: var(--muted); white-space: nowrap; }
+    .trow .left { min-width: 28px; text-align: right; white-space: nowrap; color: var(--amber); }
+    .trow .run { color: var(--blue); font-weight: 600; margin-top: 2px; }
+    .trow .chase-text { color: #8a5a00; margin-top: 2px; }
+    .card { min-width: 0; overflow-wrap: anywhere; }
     pre { margin: 0; max-height: 260px; overflow: auto; padding: 10px; border-radius: 8px; background: #20282d; color: #dce5e9; font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
     .order { padding: 10px 0; border-bottom: 1px solid #eceff1; }
     .order:last-child { border-bottom: 0; }
@@ -226,8 +232,7 @@
 
       const tables = s.tables || [];
       html += `<div class="card"><h2>桌台（${tables.length}，追注 ${tables.filter(t => t.chase !== '-').length}）</h2>
-        ${tables.length ? `<table class="tables">${tables.map(t => `<tr class="${t.chase !== '-' ? 'chase' : ''}">
-          <td>${esc(t.name)}</td><td>${esc(t.state)}</td><td class="run">${esc(t.latestRun)}</td><td>${esc(t.chase)}</td><td>${t.remainingSeconds > 0 ? t.remainingSeconds + 's' : ''}</td></tr>`).join('')}</table>`
+        ${tables.length ? tables.map(t => tableRow(t.name, t.state, t.remainingSeconds, t.latestRun, t.chase)).join('')
           : '<div class="muted">等待全桌数据</div>'}</div>`;
 
       html += `<div class="card"><h2>日志</h2><pre id="logs">${esc((s.logs || []).join('\n'))}</pre></div>`;
@@ -272,7 +277,7 @@
       html += renderCommands(data.commands);
       const chases = t.chases || [];
       html += `<div class="card"><h2>桌台（${t.tables ?? 0}，追注 ${t.chasing ?? chases.length}）</h2>
-        ${chases.length ? `<table class="tables">${chases.map(c => `<tr class="chase"><td>${esc(c.name)}</td><td class="run">${esc(c.latestRun)}</td><td>${esc(c.chase)}</td></tr>`).join('')}</table>`
+        ${chases.length ? chases.map(c => tableRow(c.name, '', 0, c.latestRun, c.chase)).join('')
           : '<div class="muted">没有追注中的桌台</div>'}</div>`;
       const scrollY = window.scrollY;
       $('app').innerHTML = html;
@@ -286,6 +291,20 @@
         if (x !== b[i]) return x > b[i];
       }
       return true;
+    }
+
+    const tableStateText = { A: '可下注', D: '停止下注', S: '洗牌', R: '结算', RP: '维护' };
+    const chaseStatusText = { Ready: '待下单', AwaitingAcceptance: '等待受理', AwaitingSettlement: '等待结算', Unknown: '结果未知' };
+
+    function tableRow(name, state, seconds, latestRun, chase) {
+      const chasing = chase && chase !== '-';
+      const chaseText = chasing ? chase.replace(/\b(Ready|AwaitingAcceptance|AwaitingSettlement|Unknown)\b/g, m => chaseStatusText[m]) : '';
+      return `<div class="trow ${chasing ? 'chase' : ''}">
+        <div class="head"><span class="name">${esc(name)}</span>
+          ${state ? `<span class="state">${esc(tableStateText[state] || state)}</span>` : ''}
+          <span class="left">${seconds > 0 ? seconds + 's' : ''}</span></div>
+        ${latestRun ? `<div class="run">${esc(latestRun)}</div>` : ''}
+        ${chasing ? `<div class="chase-text">${esc(chaseText)}</div>` : ''}</div>`;
     }
 
     function renderTurnover(t) {

@@ -643,6 +643,8 @@ internal sealed class MonitorService : IAsyncDisposable
         StrategyPattern.SingleAlternation => "单跳",
         StrategyPattern.DoubleAlternation => "二排",
         StrategyPattern.TripleAlternation => "三排",
+        StrategyPattern.OneTwoAlternation => "一拖二",
+        StrategyPattern.OneThreeAlternation => "一拖三",
         _ => pattern.ToString()
     };
 
