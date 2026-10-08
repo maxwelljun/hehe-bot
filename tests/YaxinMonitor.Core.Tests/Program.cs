@@ -524,6 +524,24 @@ var tests = new (string Name, Action Run)[]
         snapshot = snapshot with { History = [.. snapshot.History, 1], GameSeq = snapshot.GameSeq + 1 };
         True(engine.Observe(snapshot, Now()).OfType<ChaseCompletedEvent>().Single().Won);
     }),
+    ("Accepted orders are not deducted from site balance twice", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(bet, Now());
+        Equal(10m, engine.UndeductedStake);
+        engine.MarkAccepted(bet.OrderKey, Now());
+        Equal(0m, engine.UndeductedStake);
+        Equal(10m, engine.ReservedStake);
+    }),
+    ("Unknown orders stay deducted from available balance", () =>
+    {
+        var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
+        BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
+        engine.MarkSubmitted(bet, Now());
+        engine.MarkUnknown(bet.OrderKey, Now());
+        Equal(10m, engine.UndeductedStake);
+    }),
     ("Alternation runs must match exactly", () =>
     {
         foreach (var (pattern, history) in new (StrategyPattern, int[])[]

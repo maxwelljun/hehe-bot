@@ -214,6 +214,14 @@ public sealed class StrategyEngine
         .Where(order => order.Status is "Submitted" or "Accepted" or "Unknown" or "SettlementPending")
         .Sum(order => order.Amount);
 
+    /// <summary>
+    /// 网站可能还没从余额里扣除的下注金额。网站受理下注后会立即从显示余额中扣掉，
+    /// 所以已受理（Accepted / SettlementPending）的订单不能再扣一次；只有已发送未确认和状态不明的订单按保守方式扣除。
+    /// </summary>
+    public decimal UndeductedStake => State.Orders.Values
+        .Where(order => !order.IsSimulation && order.Status is "Submitted" or "Unknown")
+        .Sum(order => order.Amount);
+
     public decimal UncertainStake => State.Orders.Values
         .Where(order => order.Status == "Unknown" && !order.CountedInDailyStake)
         .Sum(order => order.Amount);

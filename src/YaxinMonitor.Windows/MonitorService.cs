@@ -535,7 +535,9 @@ internal sealed class MonitorService : IAsyncDisposable
         decimal? maximum = candidate.Side == BetSide.Player ? table.PlayerMax : table.BankerMax;
         if (minimum is null || maximum is null || candidate.Amount < minimum || candidate.Amount > maximum) return "金额不符合桌台限额。";
         decimal reserved = _engine.ReservedStake;
-        if (balance - reserved < candidate.Amount) return "可用余额不足。";
+        // 网站余额已扣除已受理的在途订单，只再扣网站可能尚未扣除的部分。
+        decimal available = balance - _engine.UndeductedStake;
+        if (available < candidate.Amount) return $"可用余额不足（可用 {available:0.##}，需要 {candidate.Amount:0.##}）。";
         if (reserved + candidate.Amount > settings.MaxReservedStake) return "达到同时在途金额上限。";
         decimal daily = _engine.State.AccountingDate == DateOnly.FromDateTime(DateTime.Now) ? _engine.State.DailyAcceptedStake : 0;
         if (daily + _engine.UncertainStake + candidate.Amount > settings.DailyStakeLimit) return "达到每日下注金额上限。";
