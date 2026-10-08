@@ -40,6 +40,7 @@ internal sealed class MonitorService : IAsyncDisposable
     private volatile bool _bettingCompatible;
     private long _nextSubmitTimestamp;
     private string? _reportedBundle;
+    private string _reportedSkippedTables = "";
     private string? _reportedCompatibilityIssue;
     private static readonly TimeSpan TodayTurnoverInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan WeekTurnoverInterval = TimeSpan.FromHours(1);
@@ -258,6 +259,11 @@ internal sealed class MonitorService : IAsyncDisposable
             {
                 _reportedCompatibilityIssue = null;
                 WriteLog("页面运行时兼容检查已恢复正常；自动下单仍保持暂停，请核对后手动恢复。");
+            }
+            if (!string.Equals(_reportedSkippedTables, poll.SkippedTables, StringComparison.Ordinal))
+            {
+                _reportedSkippedTables = poll.SkippedTables;
+                if (poll.SkippedTables.Length > 0) WriteLog($"已跳过数据不完整的桌台（{poll.SkippedTables}），其他桌台照常监控和下单。");
             }
             if (!string.Equals(_reportedBundle, poll.Bundle, StringComparison.Ordinal))
             {

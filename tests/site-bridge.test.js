@@ -203,6 +203,29 @@ async function main() {
   assert.match(unreadablePoll.compatibilityError, /缺少局号、状态或路单接口/);
   ctrl.tableRoadBean = roadBean;
 
+  // 个别桌台数据不完整时只跳过这些桌台，其他桌台照常可下注。
+  const map = context.window.TableManager._tableDataCtrlMap;
+  map["3002"] = { tableId: 3002, gameType: 1, tableBetBean: ctrl.tableBetBean };
+  const partialPoll = context.window.__YAXIN_MONITOR__.poll();
+  assert.equal(partialPoll.observationCompatible, true);
+  assert.equal(partialPoll.bettingCompatible, true);
+  assert.equal(partialPoll.compatibilityError, "");
+  assert.match(partialPoll.skippedTables, /桌台 3002 缺少局号、状态或路单接口/);
+  assert.equal(partialPoll.tables.some(table => table.tableId === 3002), false);
+  assert.equal(partialPoll.tables.some(table => table.tableId === 18), true);
+  const skippedBet = context.window.__YAXIN_MONITOR__.submitBet({ orderKey: "skip", tableId: 3002, shoeSeq: 0, gameSeq: 0,
+    side: "PLAYER", amount: 10, minimumRemainingMilliseconds: 8000 });
+  assert.equal(skippedBet.submitted, false);
+  assert.match(skippedBet.error, /缺少下注接口/);
+  // 一半以上桌台不完整，视为网站接口变化，整体停用。
+  const total = Object.keys(map).length;
+  for (let id = 4000; id < 4000 + total; id++) map[String(id)] = { tableId: id, gameType: 1 };
+  const brokenPoll = context.window.__YAXIN_MONITOR__.poll();
+  assert.equal(brokenPoll.observationCompatible, false);
+  assert.equal(brokenPoll.bettingCompatible, false);
+  for (const key of Object.keys(map)) if (Number(key) >= 3002) delete map[key];
+  assert.equal(context.window.__YAXIN_MONITOR__.poll().bettingCompatible, true);
+
   const secondInfo = await vm.runInNewContext(source, context, { filename: bridgePath });
   assert.equal(secondInfo.bridgeVersion, 3);
   assert.equal(secondInfo.sessionId, "test-session");

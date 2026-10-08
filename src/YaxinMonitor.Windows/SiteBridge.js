@@ -142,28 +142,46 @@
     return Object.keys(map).map(key => map[key]).filter(ctrl => ctrl && Number(ctrl.gameType) === 1);
   }
 
+  function readable(ctrl) {
+    return Boolean(ctrl.tableRoundInfoBean && ctrl.tableStateInfo && ctrl.tableRoadBean
+      && ctrl.tableRoadBean.history && typeof ctrl.tableRoadBean.history[Symbol.iterator] === "function");
+  }
+
+  function bettable(ctrl) {
+    const bean = ctrl.tableBetBean;
+    const limits = bean && bean.betZoneLimitData;
+    return Boolean(bean && bean.betZoneMap && limits && limits.PLAYER && limits.BANKER
+      && typeof ctrl.reqBetMessage === "function" && typeof ctrl.setBetResponseMsg === "function");
+  }
+
+  // 个别桌台数据不完整（例如刚开台、维护中）只跳过这些桌台；超过一半桌台不完整才视为网站接口变化，整体停用。
   function inspectCompatibility(controllers) {
     const observationIssues = [];
     const bettingIssues = [];
+    const readableTables = [];
+    const bettableTables = [];
     for (const ctrl of controllers) {
       const table = String(ctrl.tableId || "未知");
-      if (!ctrl.tableRoundInfoBean || !ctrl.tableStateInfo || !ctrl.tableRoadBean
-          || !ctrl.tableRoadBean.history || typeof ctrl.tableRoadBean.history[Symbol.iterator] !== "function")
+      if (!readable(ctrl)) {
         observationIssues.push(`桌台 ${table} 缺少局号、状态或路单接口`);
-      const bean = ctrl.tableBetBean;
-      const limits = bean && bean.betZoneLimitData;
-      if (!bean || !bean.betZoneMap || !limits || !limits.PLAYER || !limits.BANKER
-          || typeof ctrl.reqBetMessage !== "function" || typeof ctrl.setBetResponseMsg !== "function")
-        bettingIssues.push(`桌台 ${table} 缺少下注、限额或回执接口`);
+        continue;
+      }
+      readableTables.push(ctrl);
+      if (bettable(ctrl)) bettableTables.push(ctrl);
+      else bettingIssues.push(`桌台 ${table} 缺少下注、限额或回执接口`);
     }
     if (controllers.length === 0) observationIssues.push("没有百家乐桌台");
-    const observationCompatible = observationIssues.length === 0;
-    const bettingCompatible = observationCompatible && bettingIssues.length === 0;
+    const observationCompatible = readableTables.length > 0 && readableTables.length * 2 > controllers.length;
+    const bettingCompatible = observationCompatible && bettableTables.length * 2 > readableTables.length;
+    const issues = observationIssues.concat(bettingIssues).slice(0, 5).join("；");
     return {
       bridgeVersion: 3,
       observationCompatible,
       bettingCompatible,
-      compatibilityError: observationIssues.concat(bettingIssues).slice(0, 5).join("；")
+      compatibilityError: bettingCompatible ? "" : issues,
+      skippedTables: bettingCompatible ? issues : "",
+      // 下注接口正常时只交出完整的桌台，避免对缺少下注接口的桌台发起追注。
+      tables: bettingCompatible ? bettableTables : readableTables
     };
   }
 
@@ -239,7 +257,7 @@
     poll() {
       const controllers = allTableControllers();
       const compatibility = inspectCompatibility(controllers);
-      const tables = controllers.map(ctrl => { hookTable(ctrl); return tableSnapshot(ctrl); });
+      const tables = compatibility.tables.map(ctrl => { hookTable(ctrl); return tableSnapshot(ctrl); });
       const playerInfo = gameManager.PlayerInfo;
       const hasUserId = playerInfo && playerInfo.userId !== null && playerInfo.userId !== undefined
         && String(playerInfo.userId).length > 0;
@@ -253,6 +271,7 @@
         observationCompatible: compatibility.observationCompatible,
         bettingCompatible: compatibility.bettingCompatible,
         compatibilityError: compatibility.compatibilityError,
+        skippedTables: compatibility.skippedTables,
         sessionId,
         bundle: bundle.split("/").pop().split("?")[0],
         balance: finite(playerInfo && playerInfo.sumAmount) || 0,
@@ -293,6 +312,7 @@
         return { submitted: false, error: "下注金额无效。" };
       const ctrl = (tableManager._tableDataCtrlMap || {})[String(tableId)];
       if (!ctrl || Number(ctrl.gameType) !== 1) return { submitted: false, error: "找不到百家乐桌台。" };
+      if (!readable(ctrl) || !bettable(ctrl)) return { submitted: false, error: "目标桌台缺少下注接口。" };
       // The site only acks inside the betting window, so a pending order from an earlier round or shoe
       // will never be acked. The host has already timed it out; drop it so the table can bet again.
       const round = ctrl.tableRoundInfoBean;

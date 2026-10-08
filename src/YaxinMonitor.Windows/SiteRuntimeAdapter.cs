@@ -25,6 +25,7 @@ internal sealed record BridgePoll
     public bool ObservationCompatible { get; init; }
     public bool BettingCompatible { get; init; }
     public string CompatibilityError { get; init; } = "";
+    public string SkippedTables { get; init; } = "";
     public bool Ready { get; init; }
     public bool LoggedIn { get; init; }
     public bool SocketConnected { get; init; }
