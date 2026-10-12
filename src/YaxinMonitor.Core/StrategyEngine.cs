@@ -77,7 +77,7 @@ public sealed class StrategyEngine
                     StrategyId = _strategy.Id,
                     Pattern = pattern,
                     StreakSide = lastSide,
-                    BetSide = _strategy.SelectBetSide(lastSide)
+                    BetSide = _strategy.InitialBetSide(pattern, lastSide)
                 };
                 events.Add(new SignalEvent(snapshot.TableId,
                     $"{snapshot.TableName} 最新形成{_strategy.PatternText(pattern)}（末口{SideText(lastSide)}），准备买{SideText(table.ActiveChase.BetSide)}。", taskKey));
@@ -297,6 +297,28 @@ public sealed class StrategyEngine
         }
 
         bool won = outcome == FixedStrategy.ToOutcome(order.Side);
+        if (StrategySettings.IsTrendPattern(chase.Pattern))
+        {
+            // 顺势：中了加下一档继续，未中立即结束，所有档位都中也结束。
+            string trendKey = chase.TaskKey;
+            if (!won)
+            {
+                table.ActiveChase = null;
+                events.Add(new ChaseCompletedEvent(table.TableId, $"{tableName} 第 {order.Attempt} 档未中，任务结束。", trendKey, false));
+                return;
+            }
+            chase.AttemptIndex++;
+            if (chase.AttemptIndex >= _strategy.Stakes.Length)
+            {
+                table.ActiveChase = null;
+                events.Add(new ChaseCompletedEvent(table.TableId, $"{tableName} 连中 {_strategy.Stakes.Length} 档，任务结束。", trendKey, true));
+            }
+            else
+            {
+                ClearPending(chase);
+            }
+            return;
+        }
         if (won)
         {
             string taskKey = chase.TaskKey;
@@ -404,10 +426,17 @@ public sealed class StrategyEngine
 
     // 一拖二、一拖三：第一档买反门（chase.BetSide），之后每一档都买第一档的另一边。
     // 例如庄闲闲庄闲闲：第一档买庄，第二、三档买闲。其他模式每档都买同一边。
-    private static BetSide AttemptSide(ChaseTaskState chase) =>
-        chase.AttemptIndex > 0 && chase.Pattern is StrategyPattern.OneTwoAlternation or StrategyPattern.OneThreeAlternation
-            ? (chase.BetSide == BetSide.Banker ? BetSide.Player : BetSide.Banker)
-            : chase.BetSide;
+    // 顺势单跳：每中一档图案继续一口一换，下一档买另一边（和局不推进档位）。
+    private static BetSide AttemptSide(ChaseTaskState chase)
+    {
+        bool flip = chase.Pattern switch
+        {
+            StrategyPattern.OneTwoAlternation or StrategyPattern.OneThreeAlternation => chase.AttemptIndex > 0,
+            StrategyPattern.SingleAlternation => chase.AttemptIndex % 2 == 1,
+            _ => false
+        };
+        return flip ? (chase.BetSide == BetSide.Banker ? BetSide.Player : BetSide.Banker) : chase.BetSide;
+    }
 
     private static string SideText(BaccaratOutcome outcome) => outcome switch
     {
@@ -446,7 +475,7 @@ public sealed class StrategyEngine
             {
                 if (chase.AttemptIndex < 0 || chase.AttemptIndex >= _strategy.Stakes.Length
                     || !_strategy.Patterns.Contains(chase.Pattern)
-                    || chase.BetSide != _strategy.SelectBetSide(chase.StreakSide))
+                    || chase.BetSide != _strategy.InitialBetSide(chase.Pattern, chase.StreakSide))
                     throw new InvalidDataException("保存的追注任务与当前策略不一致。");
                 continue;
             }

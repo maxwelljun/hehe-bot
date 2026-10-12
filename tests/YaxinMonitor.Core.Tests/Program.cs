@@ -2,11 +2,11 @@ using YaxinMonitor.Core;
 
 var tests = new (string Name, Action Run)[]
 {
-    ("Latest six creates opposite 10 bet", () =>
+    ("Latest six follows the streak with a 10 bet", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
         BetCandidate bet = Candidate(engine.Observe(snapshot, Now()));
-        Equal(BetSide.Player, bet.Side); Equal(10m, bet.Amount); Equal(1, bet.Attempt);
+        Equal(BetSide.Banker, bet.Side); Equal(10m, bet.Amount); Equal(1, bet.Attempt);
     }),
     ("Pattern progress counts forming alternation hands", () =>
     {
@@ -27,7 +27,7 @@ var tests = new (string Name, Action Run)[]
     ("Pair and lucky-six flags preserve banker result", () =>
     {
         var (engine, snapshot) = Ready([1, 17, 33, 65, 1, 1]);
-        Equal(BetSide.Player, Candidate(engine.Observe(snapshot, Now())).Side);
+        Equal(BetSide.Banker, Candidate(engine.Observe(snapshot, Now())).Side);
     }),
     ("Ties are ignored inside trigger run", () =>
     {
@@ -39,29 +39,31 @@ var tests = new (string Name, Action Run)[]
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1, 3]);
         False(engine.Observe(snapshot, Now()).OfType<BetRequestedEvent>().Any());
     }),
-    ("First win ends chase", () =>
+    ("Streak trend stops on the first loss", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
         BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
         var settled = snapshot with { GameSeq = 8, History = [.. snapshot.History, 2] };
-        True(engine.Observe(settled, Now().AddMinutes(1)).OfType<ChaseCompletedEvent>().Single().Won);
+        False(engine.Observe(settled, Now().AddMinutes(1)).OfType<ChaseCompletedEvent>().Single().Won);
         True(engine.State.Tables[1].ActiveChase is null);
+        False(engine.Observe(settled, Now().AddMinutes(1)).OfType<BetRequestedEvent>().Any());
     }),
-    ("Loss advances 10 20 40 and then stops", () =>
+    ("Streak trend wins advance 10 20 40 and then stop", () =>
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
         BetCandidate first = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        Equal(BetSide.Banker, first.Side);
         snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 1] };
         BetCandidate second = Candidate(engine.Observe(snapshot, Now().AddMinutes(1)));
-        Equal(20m, second.Amount); Equal(2, second.Attempt);
+        Equal(BetSide.Banker, second.Side); Equal(20m, second.Amount); Equal(2, second.Attempt);
         SubmitAndAccept(engine, second);
         snapshot = snapshot with { GameSeq = 9, History = [.. snapshot.History, 1] };
         BetCandidate third = Candidate(engine.Observe(snapshot, Now().AddMinutes(2)));
-        Equal(40m, third.Amount); Equal(3, third.Attempt);
+        Equal(BetSide.Banker, third.Side); Equal(40m, third.Amount); Equal(3, third.Attempt);
         SubmitAndAccept(engine, third);
         snapshot = snapshot with { GameSeq = 10, History = [.. snapshot.History, 1] };
         ChaseCompletedEvent completed = engine.Observe(snapshot, Now().AddMinutes(3)).OfType<ChaseCompletedEvent>().Single();
-        False(completed.Won); True(engine.State.Tables[1].ActiveChase is null);
+        True(completed.Won); True(engine.State.Tables[1].ActiveChase is null);
         False(engine.Observe(snapshot, Now().AddMinutes(3)).OfType<BetRequestedEvent>().Any());
     }),
     ("Tie repeats same 10 amount on next game", () =>
@@ -70,7 +72,7 @@ var tests = new (string Name, Action Run)[]
         SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
         snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 3] };
         BetCandidate again = Candidate(engine.Observe(snapshot, Now().AddMinutes(1)));
-        Equal(BetSide.Banker, again.Side); Equal(10m, again.Amount); Equal(1, again.Attempt);
+        Equal(BetSide.Player, again.Side); Equal(10m, again.Amount); Equal(1, again.Attempt);
     }),
     ("Duplicate snapshot never duplicates an order", () =>
     {
@@ -148,7 +150,7 @@ var tests = new (string Name, Action Run)[]
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
         Candidate(engine.Observe(snapshot, Now()));
         snapshot = snapshot with { ShoeSeq = 2, GameSeq = 7, History = [2, 2, 2, 2, 2, 2] };
-        Equal(BetSide.Banker, Candidate(engine.Observe(snapshot, Now().AddMinutes(1))).Side);
+        Equal(BetSide.Player, Candidate(engine.Observe(snapshot, Now().AddMinutes(1))).Side);
     }),
     ("New shoe defers an accepted order and releases the table", () =>
     {
@@ -177,9 +179,11 @@ var tests = new (string Name, Action Run)[]
     {
         var (engine, snapshot) = Ready([1, 1, 1, 1, 1, 1]);
         BetCandidate bet = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
-        True(engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Player, Now()).OfType<ChaseCompletedEvent>().Single().Won);
-        Equal(0, engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Player, Now()).Count);
-        Equal(0, engine.ApplySiteResult(1, "B1", 1, bet.GameSeq + 1, BaccaratOutcome.Player, Now()).Count);
+        var settled = engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Banker, Now());
+        False(settled.OfType<ChaseCompletedEvent>().Any());
+        Equal(1, engine.State.Tables[1].ActiveChase!.AttemptIndex);
+        Equal(0, engine.ApplySiteResult(1, "B1", 1, bet.GameSeq, BaccaratOutcome.Banker, Now()).Count);
+        Equal(0, engine.ApplySiteResult(1, "B1", 1, bet.GameSeq + 1, BaccaratOutcome.Banker, Now()).Count);
     }),
     ("Site result push settles an order deferred by a new shoe", () =>
     {
@@ -211,7 +215,7 @@ var tests = new (string Name, Action Run)[]
         snapshot = snapshot with { ShoeSeq = 2, GameSeq = 7, History = [2, 2, 2, 2, 2, 2] };
         IReadOnlyList<EngineEvent> events = engine.Observe(snapshot, Now().AddMinutes(1));
         Equal("SettlementPending", engine.State.Orders[old.OrderKey].Status);
-        Equal(BetSide.Banker, Candidate(events).Side);
+        Equal(BetSide.Player, Candidate(events).Side);
     }),
     ("New shoe still blocks an order with unknown acceptance", () =>
     {
@@ -238,13 +242,13 @@ var tests = new (string Name, Action Run)[]
         snapshot = snapshot with { RemainingMilliseconds = 10_000 };
         True(engine.Observe(snapshot, Now().AddSeconds(1)).OfType<BetRequestedEvent>().Any());
     }),
-    ("Custom follow strategy uses its streak and stakes", () =>
+    ("Custom streak length and stakes; trend ignores direction setting", () =>
     {
-        var strategy = new StrategySettings { StreakLength = 4, Direction = StrategyDirection.Follow, Stakes = [5, 15] };
+        var strategy = new StrategySettings { StreakLength = 4, Direction = StrategyDirection.Opposite, Stakes = [5, 15] };
         var (engine, snapshot) = Ready([1, 1, 1, 1], strategy);
         BetCandidate first = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
         Equal(BetSide.Banker, first.Side); Equal(5m, first.Amount);
-        snapshot = snapshot with { GameSeq = 6, History = [.. snapshot.History, 2] };
+        snapshot = snapshot with { GameSeq = 6, History = [.. snapshot.History, 1] };
         BetCandidate second = Candidate(engine.Observe(snapshot, Now().AddMinutes(1)));
         Equal(BetSide.Banker, second.Side); Equal(15m, second.Amount);
         SubmitAndAccept(engine, second);
@@ -307,7 +311,7 @@ var tests = new (string Name, Action Run)[]
         Directory.CreateDirectory(store.DirectoryPath);
         File.WriteAllText(store.SettingsPath, "{\"Version\":1,\"Mode\":\"ReadOnly\",\"AllowedBundle\":\"index.0e81c.js\"}");
         YaxinSettings settings = store.LoadSettings();
-        Equal(FixedStrategy.Id, settings.Strategy.Id);
+        Equal(FixedStrategy.Id + "-trend1", settings.Strategy.Id);
     })),
     ("Custom settings persist all strategy fields", () => WithStore(store =>
     {
@@ -570,16 +574,42 @@ var tests = new (string Name, Action Run)[]
         BetCandidate second = Candidate(engine.Observe(snapshot, Now().AddMinutes(1)));
         Equal(BetSide.Player, second.Side); Equal(20m, second.Amount); Equal(2, second.Attempt);
     }),
-    ("Extended alternation triggers only once", () =>
+    ("Single alternation trend alternates sides and stops after three wins", () =>
     {
         var (engine, snapshot) = Ready([1, 2, 1, 2, 1, 2], Patterns(StrategyPattern.SingleAlternation));
-        SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        BetCandidate first = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        Equal(BetSide.Banker, first.Side); Equal(10m, first.Amount);
         snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 1] };
         var events = engine.Observe(snapshot, Now().AddMinutes(1));
-        True(events.OfType<ChaseCompletedEvent>().Single().Won);
         False(events.OfType<SignalEvent>().Any());
-        snapshot = snapshot with { GameSeq = 9, History = [.. snapshot.History, 2] };
-        False(engine.Observe(snapshot, Now().AddMinutes(2)).OfType<SignalEvent>().Any());
+        BetCandidate second = Candidate(events);
+        Equal(BetSide.Player, second.Side); Equal(20m, second.Amount);
+        SubmitAndAccept(engine, second);
+        // 和局不推进档位，仍买闲。
+        snapshot = snapshot with { GameSeq = 9, History = [.. snapshot.History, 3] };
+        BetCandidate again = Candidate(engine.Observe(snapshot, Now().AddMinutes(2)));
+        Equal(BetSide.Player, again.Side); Equal(20m, again.Amount);
+        SubmitAndAccept(engine, again);
+        snapshot = snapshot with { GameSeq = 10, History = [.. snapshot.History, 2] };
+        BetCandidate third = Candidate(engine.Observe(snapshot, Now().AddMinutes(3)));
+        Equal(BetSide.Banker, third.Side); Equal(40m, third.Amount);
+        SubmitAndAccept(engine, third);
+        snapshot = snapshot with { GameSeq = 11, History = [.. snapshot.History, 1] };
+        events = engine.Observe(snapshot, Now().AddMinutes(4));
+        True(events.OfType<ChaseCompletedEvent>().Single().Won);
+        // 图案继续延长属于同一条链，不重复触发。
+        False(events.OfType<SignalEvent>().Any());
+        snapshot = snapshot with { GameSeq = 12, History = [.. snapshot.History, 2] };
+        False(engine.Observe(snapshot, Now().AddMinutes(5)).OfType<SignalEvent>().Any());
+    }),
+    ("Single alternation trend stops on the first loss", () =>
+    {
+        var (engine, snapshot) = Ready([2, 1, 2, 1, 2, 1], Patterns(StrategyPattern.SingleAlternation));
+        BetCandidate first = SubmitAndAccept(engine, Candidate(engine.Observe(snapshot, Now())));
+        Equal(BetSide.Player, first.Side);
+        snapshot = snapshot with { GameSeq = 8, History = [.. snapshot.History, 1] };
+        False(engine.Observe(snapshot, Now().AddMinutes(1)).OfType<ChaseCompletedEvent>().Single().Won);
+        True(engine.State.Tables[1].ActiveChase is null);
     }),
     ("Multiple patterns share one chase per table", () =>
     {
@@ -591,7 +621,7 @@ var tests = new (string Name, Action Run)[]
         var (engine, snapshot) = Ready([1, 1, 2, 2, 1, 1], strategy);
         var events = engine.Observe(snapshot, Now());
         Equal(1, events.OfType<SignalEvent>().Count());
-        Equal(BetSide.Player, Candidate(events).Side);
+        Equal(BetSide.Banker, Candidate(events).Side);
         Equal(StrategyPattern.Streak, engine.State.Tables[1].ActiveChase!.Pattern);
     }),
     ("Pattern seen during an active chase is consumed", () =>
@@ -609,8 +639,9 @@ var tests = new (string Name, Action Run)[]
     }),
     ("Pattern selection changes strategy id and validates", () =>
     {
-        Equal(FixedStrategy.Id, new StrategySettings().Id);
-        Equal("custom-v1-6-0-0-10_20_40-p0_2", Patterns(StrategyPattern.DoubleAlternation, StrategyPattern.Streak).Id);
+        Equal(FixedStrategy.Id + "-trend1", new StrategySettings().Id);
+        Equal("custom-v1-6-0-0-10_20_40-p2", Patterns(StrategyPattern.DoubleAlternation).Id);
+        Equal("custom-v1-6-0-0-10_20_40-p0_2-trend1", Patterns(StrategyPattern.DoubleAlternation, StrategyPattern.Streak).Id);
         Throws<ArgumentException>(() => Patterns().Validate());
         Throws<ArgumentException>(() => Patterns(StrategyPattern.Streak, StrategyPattern.Streak).Validate());
     }),

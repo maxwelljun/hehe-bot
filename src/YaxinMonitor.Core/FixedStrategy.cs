@@ -46,11 +46,13 @@ public sealed record StrategySettings
             // Streak-only settings keep their original ids so saved chases survive the upgrade.
             string patterns = Patterns is [StrategyPattern.Streak] ? ""
                 : "-p" + string.Join('_', OrderedPatterns.Select(pattern => (int)pattern));
+            // 连续同色、单跳改为顺势打法后加后缀，旧版本保存的追注任务不会按新打法继续。
+            string trend = Patterns.Any(IsTrendPattern) ? "-trend1" : "";
             if (patterns.Length == 0 && StreakLength == FixedStrategy.StreakLength && TriggerSide == StrategyTriggerSide.Both
                 && Direction == StrategyDirection.Opposite && Stakes.SequenceEqual(FixedStrategy.Stakes))
-                return FixedStrategy.Id;
+                return FixedStrategy.Id + trend;
             string amounts = string.Join('_', Stakes.Select(value => value.ToString("0", System.Globalization.CultureInfo.InvariantCulture)));
-            return $"custom-v1-{StreakLength}-{(int)TriggerSide}-{(int)Direction}-{amounts}{patterns}";
+            return $"custom-v1-{StreakLength}-{(int)TriggerSide}-{(int)Direction}-{amounts}{patterns}{trend}";
         }
     }
 
@@ -75,6 +77,30 @@ public sealed record StrategySettings
         _ => false
     };
 
+    /// <summary>
+    /// 顺势模式：连续同色、单跳不受“方向”设置影响，按图案规律继续买（连续同色买同一边，单跳买另一边）；
+    /// 中一档就按金额序列加下一档，任意一档未中立即结束，全部档位都中也结束。
+    /// </summary>
+    public static bool IsTrendPattern(StrategyPattern pattern) =>
+        pattern is StrategyPattern.Streak or StrategyPattern.SingleAlternation;
+
+    public BetSide InitialBetSide(StrategyPattern pattern, BaccaratOutcome lastSide)
+    {
+        BetSide same = lastSide switch
+        {
+            BaccaratOutcome.Banker => BetSide.Banker,
+            BaccaratOutcome.Player => BetSide.Player,
+            _ => throw new ArgumentOutOfRangeException(nameof(lastSide))
+        };
+        BetSide other = same == BetSide.Banker ? BetSide.Player : BetSide.Banker;
+        return pattern switch
+        {
+            StrategyPattern.Streak => same,
+            StrategyPattern.SingleAlternation => other,
+            _ => SelectBetSide(lastSide)
+        };
+    }
+
     public BetSide SelectBetSide(BaccaratOutcome streakSide)
     {
         BetSide same = streakSide switch
@@ -88,12 +114,14 @@ public sealed record StrategySettings
     }
 
     [JsonIgnore]
-    public string Summary => $"识别 {string.Join(" + ", OrderedPatterns.Select(PatternText))}，末口{TriggerText(TriggerSide)}时触发，{DirectionText(Direction)}，金额 {string.Join(" → ", Stakes.Select(value => value.ToString("0")))}";
+    public string Summary => $"识别 {string.Join(" + ", OrderedPatterns.Select(PatternText))}，末口{TriggerText(TriggerSide)}时触发，"
+        + (Patterns.All(IsTrendPattern) ? "" : (Patterns.Any(IsTrendPattern) ? "其他模式" : "") + DirectionText(Direction) + "，")
+        + $"金额 {string.Join(" → ", Stakes.Select(value => value.ToString("0")))}";
 
     public string PatternText(StrategyPattern pattern) => pattern switch
     {
-        StrategyPattern.Streak => $"连续同色 {StreakLength} 口",
-        StrategyPattern.SingleAlternation => "单跳 6 口",
+        StrategyPattern.Streak => $"连续同色 {StreakLength} 口（顺势）",
+        StrategyPattern.SingleAlternation => "单跳 6 口（顺势）",
         StrategyPattern.DoubleAlternation => "二排 6 口",
         StrategyPattern.TripleAlternation => "三排 9 口",
         StrategyPattern.OneTwoAlternation => "一拖二 6 口",

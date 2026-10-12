@@ -318,8 +318,8 @@ internal sealed class MainForm : Form
         _toolTips.SetToolTip(_save, "保存当前设置，不启动监控。");
         _toolTips.SetToolTip(_update, "从授权服务器下载最新版本并替换当前程序，旧版本自动备份。需先停止监控。");
         _toolTips.SetToolTip(_rollback, "恢复到在线更新前备份的旧版本。需先停止监控。");
-        _toolTips.SetToolTip(_patterns[0].Box, "最新连续同色达到“连续次数”（默认 6 口），如庄庄庄庄庄庄。");
-        _toolTips.SetToolTip(_patterns[1].Box, "最新 6 口一口一换，如庄闲庄闲庄闲。");
+        _toolTips.SetToolTip(_patterns[0].Box, "最新连续同色达到“连续次数”（默认 6 口），如庄庄庄庄庄庄。顺势买同一边，中了按金额序列加下一档，未中即停，最多买满金额档数。不受“方向”影响。");
+        _toolTips.SetToolTip(_patterns[1].Box, "最新 6 口一口一换，如庄闲庄闲庄闲。顺势继续一口一换（下一口买庄），中了按金额序列加下一档，未中即停，最多买满金额档数。不受“方向”影响。");
         _toolTips.SetToolTip(_patterns[2].Box, "最新 6 口两口一换，如庄庄闲闲庄庄。");
         _toolTips.SetToolTip(_patterns[3].Box, "最新 9 口三口一换，如庄庄庄闲闲闲庄庄庄。");
         _toolTips.SetToolTip(_patterns[4].Box, "最新 6 口一口两口交替，如庄闲闲庄闲闲，反向时第一档买庄，之后各档买闲。");
